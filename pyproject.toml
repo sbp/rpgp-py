@@ -4,12 +4,11 @@ build-backend = "maturin"
 
 [project]
 name = "rpgp-py"
-version = "0.1.0"
 description = "Python binding for rpgp, a Rust implementation of OpenPGP according to RFC 9580"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
-
+dynamic = ["version"]
 [tool.maturin]
 python-source = "src"
 module-name = "openpgp._openpgp"
