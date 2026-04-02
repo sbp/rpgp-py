@@ -105,6 +105,19 @@ public_key = secret_key.to_public_key()
 secret_key.verify_bindings()
 public_key.verify_bindings()
 
+direct_self_signature = public_key.direct_signature_infos()[0]
+assert direct_self_signature.signature_type == "direct-key"
+assert direct_self_signature.key_flags.certify is True
+assert direct_self_signature.key_flags.sign is True
+assert direct_self_signature.features is not None
+assert direct_self_signature.features.seipd_v2 is True
+assert direct_self_signature.preferred_hash_algorithms == ["sha256", "sha384", "sha512", "sha224"]
+
+user_binding = public_key.user_bindings()[0]
+assert user_binding.user_id == "Me <me@example.com>"
+assert user_binding.is_primary is True
+assert user_binding.signatures[0].signature_type == "cert-positive"
+
 signed = sign_message(b"generated payload", secret_key)
 message, _ = Message.from_armor(signed)
 message.verify(public_key)
@@ -120,6 +133,7 @@ assert encrypted_message.decrypt(secret_key).payload_bytes() == b"secret"
 - Parse ASCII-armored or binary transferable public keys.
 - Parse ASCII-armored or binary transferable secret keys.
 - Expose key metadata such as fingerprints, key IDs, subkey counts, and user IDs.
+- Inspect certificate self-signature metadata, including direct-key signatures, user-ID binding signatures, key flags, features, and preferred algorithm lists.
 - Serialize keys back to binary packets or ASCII armor.
 - Generate new transferable secret/public keys with typed builder APIs based on rPGP's `SecretKeyParamsBuilder` and `SubkeyParamsBuilder`.
 - Configure key-generation parameters such as key versions, key flags, user IDs, preferred algorithms, SEIPD feature flags, passphrase protection, and subkeys.

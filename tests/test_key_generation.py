@@ -10,6 +10,7 @@ from openpgp import (
     PublicKey,
     SecretKey,
     SecretKeyParamsBuilder,
+    SignatureInfo,
     SubkeyParamsBuilder,
     encrypt_message_to_recipient,
     sign_message,
@@ -362,3 +363,195 @@ def test_signing_capable_subkey_generation_verifies_bindings() -> None:
     assert public_key.public_subkey_count == 1
     secret_key.verify_bindings()
     public_key.verify_bindings()
+
+
+
+def build_certificate_metadata_key(
+    version: KeyVersion,
+    *,
+    primary_user_id: str | None,
+    feature_seipd_v1: bool = True,
+    feature_seipd_v2: bool = False,
+) -> SecretKey:
+    """Adapt upstream certificate-metadata builder coverage into reusable helpers."""
+
+    builder = (
+        SecretKeyParamsBuilder()
+        .version(version)
+        .key_type(KeyType.ed25519())
+        .can_certify(True)
+        .can_sign(True)
+        .feature_seipd_v1(feature_seipd_v1)
+        .feature_seipd_v2(feature_seipd_v2)
+        .preferred_symmetric_algorithms(AES256_ONLY)
+        .preferred_hash_algorithms(SHA512_ONLY)
+        .preferred_compression_algorithms(ZLIB_ONLY)
+        .subkey(
+            SubkeyParamsBuilder()
+            .version(version)
+            .key_type(KeyType.x25519())
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+    )
+    if primary_user_id is not None:
+        builder = builder.primary_user_id(primary_user_id)
+    return builder.build().generate()
+
+
+def assert_certificate_preferences_are_exposed_on_signature(
+    info: SignatureInfo,
+    *,
+    has_features: bool,
+    seipd_v1: bool,
+    seipd_v2: bool,
+) -> None:
+    """Assert the self-signature metadata surfaced from upstream certificate builders."""
+
+    assert info.preferred_symmetric_algorithms == ["aes256"]
+    assert info.preferred_hash_algorithms == ["sha512"]
+    assert info.preferred_compression_algorithms == ["zlib"]
+    assert info.preferred_aead_algorithms == []
+    assert info.key_flags.certify is True
+    assert info.key_flags.sign is True
+    assert info.key_flags.encrypt_communications is False
+    assert info.key_flags.encrypt_storage is False
+    assert info.key_flags.authenticate is False
+
+    if has_features:
+        assert info.features is not None
+        assert info.features.seipd_v1 is seipd_v1
+        assert info.features.seipd_v2 is seipd_v2
+    else:
+        assert info.features is None
+
+
+def test_v4_certificate_metadata_is_exposed_on_primary_user_binding_signature() -> None:
+    """Adapt upstream `test_cert_metadata_gen_v4_v4` into Python-visible metadata access."""
+
+    secret_key = build_certificate_metadata_key(4, primary_user_id="alice")
+    public_key = secret_key.to_public_key()
+
+    assert secret_key.direct_signature_infos() == []
+    assert public_key.direct_signature_infos() == []
+
+    secret_bindings = secret_key.user_bindings()
+    public_bindings = public_key.user_bindings()
+    assert len(secret_bindings) == 1
+    assert len(public_bindings) == 1
+
+    secret_binding = secret_bindings[0]
+    public_binding = public_bindings[0]
+    assert secret_binding.user_id == "alice"
+    assert secret_binding.is_primary is True
+    assert len(secret_binding.signatures) == 1
+    assert public_binding.user_id == "alice"
+    assert public_binding.is_primary is True
+    assert len(public_binding.signatures) == 1
+
+    secret_info = secret_binding.signatures[0]
+    public_info = public_binding.signatures[0]
+    assert secret_info.signature_type == "cert-positive"
+    assert public_info.signature_type == "cert-positive"
+    assert_certificate_preferences_are_exposed_on_signature(
+        secret_info,
+        has_features=True,
+        seipd_v1=True,
+        seipd_v2=False,
+    )
+    assert_certificate_preferences_are_exposed_on_signature(
+        public_info,
+        has_features=True,
+        seipd_v1=True,
+        seipd_v2=False,
+    )
+
+
+
+def test_v6_certificate_metadata_moves_to_direct_key_signature() -> None:
+    """Adapt upstream `test_cert_metadata_gen_v6_v6` into Python-visible metadata access."""
+
+    secret_key = build_certificate_metadata_key(
+        6,
+        primary_user_id="alice",
+        feature_seipd_v2=True,
+    )
+    public_key = secret_key.to_public_key()
+
+    secret_direct_signatures = secret_key.direct_signature_infos()
+    public_direct_signatures = public_key.direct_signature_infos()
+    assert len(secret_direct_signatures) == 1
+    assert len(public_direct_signatures) == 1
+
+    secret_direct = secret_direct_signatures[0]
+    public_direct = public_direct_signatures[0]
+    assert secret_direct.signature_type == "direct-key"
+    assert public_direct.signature_type == "direct-key"
+    assert_certificate_preferences_are_exposed_on_signature(
+        secret_direct,
+        has_features=True,
+        seipd_v1=True,
+        seipd_v2=True,
+    )
+    assert_certificate_preferences_are_exposed_on_signature(
+        public_direct,
+        has_features=True,
+        seipd_v1=True,
+        seipd_v2=True,
+    )
+
+    secret_binding = secret_key.user_bindings()[0]
+    public_binding = public_key.user_bindings()[0]
+    secret_binding_info = secret_binding.signatures[0]
+    public_binding_info = public_binding.signatures[0]
+    assert secret_binding.user_id == "alice"
+    assert secret_binding.is_primary is True
+    assert public_binding.user_id == "alice"
+    assert public_binding.is_primary is True
+    assert secret_binding_info.preferred_symmetric_algorithms == []
+    assert secret_binding_info.preferred_hash_algorithms == []
+    assert secret_binding_info.preferred_compression_algorithms == []
+    assert secret_binding_info.preferred_aead_algorithms == []
+    assert public_binding_info.preferred_symmetric_algorithms == []
+    assert public_binding_info.preferred_hash_algorithms == []
+    assert public_binding_info.preferred_compression_algorithms == []
+    assert public_binding_info.preferred_aead_algorithms == []
+    assert secret_binding_info.key_flags.certify is False
+    assert secret_binding_info.key_flags.sign is False
+    assert public_binding_info.key_flags.certify is False
+    assert public_binding_info.key_flags.sign is False
+    assert secret_binding_info.features is None
+    assert public_binding_info.features is None
+
+
+
+def test_v6_id_less_certificate_still_exposes_direct_key_signature_metadata() -> None:
+    """Adapt upstream `test_cert_metadata_gen_v6_v6_id_less` into Python-visible metadata access."""
+
+    secret_key = build_certificate_metadata_key(
+        6,
+        primary_user_id=None,
+        feature_seipd_v1=False,
+        feature_seipd_v2=True,
+    )
+    public_key = secret_key.to_public_key()
+
+    assert secret_key.user_bindings() == []
+    assert public_key.user_bindings() == []
+
+    secret_direct = secret_key.direct_signature_infos()
+    public_direct = public_key.direct_signature_infos()
+    assert len(secret_direct) == 1
+    assert len(public_direct) == 1
+    assert_certificate_preferences_are_exposed_on_signature(
+        secret_direct[0],
+        has_features=True,
+        seipd_v1=False,
+        seipd_v2=True,
+    )
+    assert_certificate_preferences_are_exposed_on_signature(
+        public_direct[0],
+        has_features=True,
+        seipd_v1=False,
+        seipd_v2=True,
+    )

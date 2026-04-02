@@ -15,7 +15,10 @@ use pgp::{
         hash::HashAlgorithm,
         sym::SymmetricKeyAlgorithm,
     },
-    packet::{DataMode, Signature, SignatureType, SignatureVersion, SignatureVersionSpecific},
+    packet::{
+        DataMode, Features as PgpFeatures, KeyFlags as PgpKeyFlags, Signature, SignatureType,
+        SignatureVersion, SignatureVersionSpecific,
+    },
     ser::Serialize,
     types::{CompressionAlgorithm, KeyDetails, KeyVersion, Password, StringToKey, Timestamp},
 };
@@ -314,6 +317,45 @@ fn data_mode_name(mode: DataMode) -> String {
     .to_string()
 }
 
+fn normalized_algorithm_name(value: impl std::fmt::Debug) -> String {
+    format!("{value:?}").to_ascii_lowercase().replace('_', "-")
+}
+
+fn symmetric_algorithm_names(values: &[SymmetricKeyAlgorithm]) -> Vec<String> {
+    values
+        .iter()
+        .map(normalized_algorithm_name)
+        .collect::<Vec<_>>()
+}
+
+fn hash_algorithm_names(values: &[HashAlgorithm]) -> Vec<String> {
+    values
+        .iter()
+        .map(normalized_algorithm_name)
+        .collect::<Vec<_>>()
+}
+
+fn compression_algorithm_names(values: &[CompressionAlgorithm]) -> Vec<String> {
+    values
+        .iter()
+        .map(normalized_algorithm_name)
+        .collect::<Vec<_>>()
+}
+
+fn aead_algorithm_preference_names(
+    values: &[(SymmetricKeyAlgorithm, AeadAlgorithm)],
+) -> Vec<(String, String)> {
+    values
+        .iter()
+        .map(|(symmetric_algorithm, aead_algorithm)| {
+            (
+                normalized_algorithm_name(symmetric_algorithm),
+                normalized_algorithm_name(aead_algorithm),
+            )
+        })
+        .collect::<Vec<_>>()
+}
+
 fn signature_version_number(version: SignatureVersion) -> u8 {
     match version {
         SignatureVersion::V2 => 2,
@@ -356,7 +398,30 @@ fn signature_salt(signature: &Signature) -> Option<Vec<u8>> {
         })
 }
 
+fn key_flags_info_from_key_flags(key_flags: &PgpKeyFlags) -> KeyFlagsInfo {
+    KeyFlagsInfo {
+        certify: key_flags.certify(),
+        sign: key_flags.sign(),
+        encrypt_communications: key_flags.encrypt_comms(),
+        encrypt_storage: key_flags.encrypt_storage(),
+        authenticate: key_flags.authentication(),
+        shared: key_flags.shared(),
+        draft_decrypt_forwarded: key_flags.draft_decrypt_forwarded(),
+        group: key_flags.group(),
+        adsk: key_flags.adsk(),
+        timestamping: key_flags.timestamping(),
+    }
+}
+
+fn features_info_from_features(features: &PgpFeatures) -> FeaturesInfo {
+    FeaturesInfo {
+        seipd_v1: features.seipd_v1(),
+        seipd_v2: features.seipd_v2(),
+    }
+}
+
 fn signature_info_from_signature(signature: &Signature, is_one_pass: bool) -> SignatureInfo {
+    let key_flags = signature.key_flags();
     SignatureInfo {
         version: signature_version_number(signature.version()),
         signature_type: signature.typ().map(signature_type_name),
@@ -385,6 +450,16 @@ fn signature_info_from_signature(signature: &Signature, is_one_pass: bool) -> Si
             .signed_hash_value()
             .map(|signed_hash_value| signed_hash_value.to_vec()),
         salt: signature_salt(signature),
+        preferred_symmetric_algorithms: symmetric_algorithm_names(
+            signature.preferred_symmetric_algs(),
+        ),
+        preferred_hash_algorithms: hash_algorithm_names(signature.preferred_hash_algs()),
+        preferred_compression_algorithms: compression_algorithm_names(
+            signature.preferred_compression_algs(),
+        ),
+        preferred_aead_algorithms: aead_algorithm_preference_names(signature.preferred_aead_algs()),
+        key_flags: key_flags_info_from_key_flags(&key_flags),
+        features: signature.features().map(features_info_from_features),
         is_one_pass,
     }
 }
@@ -392,6 +467,38 @@ fn signature_info_from_signature(signature: &Signature, is_one_pass: bool) -> Si
 fn signature_info_from_full_signature(signature: &FullSignaturePacket) -> SignatureInfo {
     let is_one_pass = matches!(signature, FullSignaturePacket::Ops { .. });
     signature_info_from_signature(signature.signature(), is_one_pass)
+}
+
+fn direct_signature_infos_from_details(
+    details: &pgp::composed::SignedKeyDetails,
+) -> Vec<SignatureInfo> {
+    details
+        .direct_signatures
+        .iter()
+        .map(|signature| signature_info_from_signature(signature, false))
+        .collect::<Vec<_>>()
+}
+
+fn user_binding_info_from_signed_user(user: &pgp::types::SignedUser) -> UserBindingInfo {
+    UserBindingInfo {
+        user_id: String::from_utf8_lossy(user.id.id()).into_owned(),
+        is_primary: user.is_primary(),
+        signatures: user
+            .signatures
+            .iter()
+            .map(|signature| signature_info_from_signature(signature, false))
+            .collect::<Vec<_>>(),
+    }
+}
+
+fn user_binding_infos_from_details(
+    details: &pgp::composed::SignedKeyDetails,
+) -> Vec<UserBindingInfo> {
+    details
+        .users
+        .iter()
+        .map(user_binding_info_from_signed_user)
+        .collect::<Vec<_>>()
 }
 
 #[derive(Clone)]
@@ -924,6 +1031,22 @@ impl PublicKey {
         lossy_user_ids(&self.inner.details)
     }
 
+    /// Return direct-key self-signature metadata attached to the certificate.
+    ///
+    /// RFC 9580 version-6 certificates place certificate-wide preferences, key flags, and
+    /// feature advertisements on these direct-key signatures.
+    fn direct_signature_infos(&self) -> Vec<SignatureInfo> {
+        direct_signature_infos_from_details(&self.inner.details)
+    }
+
+    /// Return user IDs together with their certification self-signatures.
+    ///
+    /// Version-4 certificates carry certificate metadata such as key flags and preferred
+    /// algorithms on the primary user-ID binding signature.
+    fn user_bindings(&self) -> Vec<UserBindingInfo> {
+        user_binding_infos_from_details(&self.inner.details)
+    }
+
     /// Verify the certificate's self-signatures and subkey binding signatures.
     fn verify_bindings(&self) -> PyResult<()> {
         self.inner.verify_bindings().map_err(to_py_err)
@@ -1009,6 +1132,22 @@ impl SecretKey {
     #[getter]
     fn user_ids(&self) -> Vec<String> {
         lossy_user_ids(&self.inner.details)
+    }
+
+    /// Return direct-key self-signature metadata attached to the secret certificate.
+    ///
+    /// RFC 9580 version-6 certificates place certificate-wide preferences, key flags, and
+    /// feature advertisements on these direct-key signatures.
+    fn direct_signature_infos(&self) -> Vec<SignatureInfo> {
+        direct_signature_infos_from_details(&self.inner.details)
+    }
+
+    /// Return user IDs together with their certification self-signatures.
+    ///
+    /// Version-4 certificates carry certificate metadata such as key flags and preferred
+    /// algorithms on the primary user-ID binding signature.
+    fn user_bindings(&self) -> Vec<UserBindingInfo> {
+        user_binding_infos_from_details(&self.inner.details)
     }
 
     /// Verify the secret key's self-signatures and subkey binding signatures.
@@ -1459,10 +1598,170 @@ impl DecryptedMessage {
     }
 }
 
+/// Decoded RFC 9580 key-flags subpacket metadata.
+#[pyclass(module = "openpgp")]
+#[derive(Clone, Copy)]
+struct KeyFlagsInfo {
+    certify: bool,
+    sign: bool,
+    encrypt_communications: bool,
+    encrypt_storage: bool,
+    authenticate: bool,
+    shared: bool,
+    draft_decrypt_forwarded: bool,
+    group: bool,
+    adsk: bool,
+    timestamping: bool,
+}
+
+#[pymethods]
+impl KeyFlagsInfo {
+    /// Whether the key may certify other keys and user IDs.
+    #[getter]
+    fn certify(&self) -> bool {
+        self.certify
+    }
+
+    /// Whether the key may create data signatures.
+    #[getter]
+    fn sign(&self) -> bool {
+        self.sign
+    }
+
+    /// Whether the key may encrypt communications.
+    #[getter]
+    fn encrypt_communications(&self) -> bool {
+        self.encrypt_communications
+    }
+
+    /// Whether the key may encrypt storage.
+    #[getter]
+    fn encrypt_storage(&self) -> bool {
+        self.encrypt_storage
+    }
+
+    /// Whether the key may be used for authentication.
+    #[getter]
+    fn authenticate(&self) -> bool {
+        self.authenticate
+    }
+
+    /// Whether the key is marked as split or shared between multiple holders.
+    #[getter]
+    fn shared(&self) -> bool {
+        self.shared
+    }
+
+    /// Whether the draft forwarded-decryption key-flag bit is set.
+    #[getter]
+    fn draft_decrypt_forwarded(&self) -> bool {
+        self.draft_decrypt_forwarded
+    }
+
+    /// Whether the key belongs to a group key-management arrangement.
+    #[getter]
+    fn group(&self) -> bool {
+        self.group
+    }
+
+    /// Whether the key is marked for additional decryption subkeys (ADSK).
+    #[getter]
+    fn adsk(&self) -> bool {
+        self.adsk
+    }
+
+    /// Whether the key may create trusted timestamps.
+    #[getter]
+    fn timestamping(&self) -> bool {
+        self.timestamping
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "KeyFlagsInfo(certify={}, sign={}, encrypt_communications={}, encrypt_storage={}, authenticate={})",
+            self.certify,
+            self.sign,
+            self.encrypt_communications,
+            self.encrypt_storage,
+            self.authenticate,
+        )
+    }
+}
+
+/// Decoded RFC 9580 Features subpacket metadata.
+#[pyclass(module = "openpgp")]
+#[derive(Clone, Copy)]
+struct FeaturesInfo {
+    seipd_v1: bool,
+    seipd_v2: bool,
+}
+
+#[pymethods]
+impl FeaturesInfo {
+    /// Whether the issuer advertises support for SEIPD v1 packets.
+    #[getter]
+    fn seipd_v1(&self) -> bool {
+        self.seipd_v1
+    }
+
+    /// Whether the issuer advertises support for SEIPD v2 packets.
+    #[getter]
+    fn seipd_v2(&self) -> bool {
+        self.seipd_v2
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "FeaturesInfo(seipd_v1={}, seipd_v2={})",
+            self.seipd_v1, self.seipd_v2
+        )
+    }
+}
+
+/// A user ID and its attached certification self-signatures.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+struct UserBindingInfo {
+    user_id: String,
+    is_primary: bool,
+    signatures: Vec<SignatureInfo>,
+}
+
+#[pymethods]
+impl UserBindingInfo {
+    /// The user ID bytes decoded lossily as UTF-8.
+    #[getter]
+    fn user_id(&self) -> String {
+        self.user_id.clone()
+    }
+
+    /// Whether any attached certification marks this as the primary user ID.
+    #[getter]
+    fn is_primary(&self) -> bool {
+        self.is_primary
+    }
+
+    /// Metadata for every certification signature attached to this user ID.
+    #[getter]
+    fn signatures(&self) -> Vec<SignatureInfo> {
+        self.signatures.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "UserBindingInfo(user_id={:?}, is_primary={}, signature_count={})",
+            self.user_id,
+            self.is_primary,
+            self.signatures.len()
+        )
+    }
+}
+
 /// Metadata extracted from an OpenPGP data signature packet.
 ///
 /// The fields mirror the RFC 9580 signature packet configuration, including issuer subpackets,
-/// the 16-bit signed hash prefix, and the version-6 salt when present.
+/// the 16-bit signed hash prefix, version-6 salts, and certificate self-signature metadata such
+/// as key flags, features, and preferred algorithm lists when present.
 #[pyclass(module = "openpgp")]
 #[derive(Clone)]
 struct SignatureInfo {
@@ -1477,6 +1776,12 @@ struct SignatureInfo {
     signer_user_id: Option<String>,
     signed_hash_value: Option<Vec<u8>>,
     salt: Option<Vec<u8>>,
+    preferred_symmetric_algorithms: Vec<String>,
+    preferred_hash_algorithms: Vec<String>,
+    preferred_compression_algorithms: Vec<String>,
+    preferred_aead_algorithms: Vec<(String, String)>,
+    key_flags: KeyFlagsInfo,
+    features: Option<FeaturesInfo>,
     is_one_pass: bool,
 }
 
@@ -1546,6 +1851,42 @@ impl SignatureInfo {
     #[getter]
     fn salt(&self) -> Option<Vec<u8>> {
         self.salt.clone()
+    }
+
+    /// Preferred symmetric algorithms advertised by this signature, normalized to lower-case.
+    #[getter]
+    fn preferred_symmetric_algorithms(&self) -> Vec<String> {
+        self.preferred_symmetric_algorithms.clone()
+    }
+
+    /// Preferred hash algorithms advertised by this signature, normalized to lower-case.
+    #[getter]
+    fn preferred_hash_algorithms(&self) -> Vec<String> {
+        self.preferred_hash_algorithms.clone()
+    }
+
+    /// Preferred compression algorithms advertised by this signature, normalized to lower-case.
+    #[getter]
+    fn preferred_compression_algorithms(&self) -> Vec<String> {
+        self.preferred_compression_algorithms.clone()
+    }
+
+    /// Preferred AEAD algorithm pairs advertised by this signature, normalized to lower-case.
+    #[getter]
+    fn preferred_aead_algorithms(&self) -> Vec<(String, String)> {
+        self.preferred_aead_algorithms.clone()
+    }
+
+    /// Decoded RFC 9580 key-flag bits advertised by this signature.
+    #[getter]
+    fn key_flags(&self) -> KeyFlagsInfo {
+        self.key_flags
+    }
+
+    /// Decoded RFC 9580 feature-advertisement bits, if the signature carries them.
+    #[getter]
+    fn features(&self) -> Option<FeaturesInfo> {
+        self.features
     }
 
     /// Whether the signature originated from a one-pass signature packet.
@@ -1966,6 +2307,9 @@ fn _openpgp(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<SecretKey>()?;
     module.add_class::<Message>()?;
     module.add_class::<DecryptedMessage>()?;
+    module.add_class::<KeyFlagsInfo>()?;
+    module.add_class::<FeaturesInfo>()?;
+    module.add_class::<UserBindingInfo>()?;
     module.add_class::<SignatureInfo>()?;
     module.add_class::<DetachedSignature>()?;
     module.add_class::<CleartextSignedMessage>()?;
