@@ -36,12 +36,12 @@ fn inspect_message_from_source(source: &[u8]) -> Result<MessageInfo, pgp::errors
     Ok(message_info_from_parts(message, headers))
 }
 
-fn message_info_from_parts(message: PgpMessage<'_>, headers: Option<Headers>) -> MessageInfo {
+fn message_info_from_ref(message: &PgpMessage<'_>, headers: Option<Headers>) -> MessageInfo {
     let (kind, is_nested) = match message {
-        PgpMessage::Literal { is_nested, .. } => ("literal", is_nested),
-        PgpMessage::Compressed { is_nested, .. } => ("compressed", is_nested),
-        PgpMessage::Signed { is_nested, .. } => ("signed", is_nested),
-        PgpMessage::Encrypted { is_nested, .. } => ("encrypted", is_nested),
+        PgpMessage::Literal { is_nested, .. } => ("literal", *is_nested),
+        PgpMessage::Compressed { is_nested, .. } => ("compressed", *is_nested),
+        PgpMessage::Signed { is_nested, .. } => ("signed", *is_nested),
+        PgpMessage::Encrypted { is_nested, .. } => ("encrypted", *is_nested),
     };
 
     MessageInfo {
@@ -49,6 +49,10 @@ fn message_info_from_parts(message: PgpMessage<'_>, headers: Option<Headers>) ->
         is_nested,
         headers,
     }
+}
+
+fn message_info_from_parts(message: PgpMessage<'_>, headers: Option<Headers>) -> MessageInfo {
+    message_info_from_ref(&message, headers)
 }
 
 fn parse_message_info_from_reader(
@@ -64,6 +68,87 @@ fn prepare_message_for_content(source: &[u8]) -> Result<PgpMessage<'_>, pgp::err
         message = message.decompress()?;
     }
     Ok(message)
+}
+
+fn payload_bytes_from_source(source: &[u8]) -> PyResult<Vec<u8>> {
+    let mut message = prepare_message_for_content(source).map_err(to_py_err)?;
+    if matches!(message, PgpMessage::Encrypted { .. }) {
+        return Err(to_py_err(
+            "message must be decrypted before reading payload",
+        ));
+    }
+    message.as_data_vec().map_err(to_py_err)
+}
+
+fn payload_text_from_source(source: &[u8]) -> PyResult<String> {
+    let mut message = prepare_message_for_content(source).map_err(to_py_err)?;
+    if matches!(message, PgpMessage::Encrypted { .. }) {
+        return Err(to_py_err(
+            "message must be decrypted before reading payload",
+        ));
+    }
+    message.as_data_string().map_err(to_py_err)
+}
+
+fn literal_mode_from_source(source: &[u8]) -> PyResult<Option<String>> {
+    let message = prepare_message_for_content(source).map_err(to_py_err)?;
+    Ok(message
+        .literal_data_header()
+        .map(|header| data_mode_name(header.mode())))
+}
+
+fn literal_filename_from_source(source: &[u8]) -> PyResult<Option<Vec<u8>>> {
+    let message = prepare_message_for_content(source).map_err(to_py_err)?;
+    Ok(message
+        .literal_data_header()
+        .map(|header| header.file_name().to_vec()))
+}
+
+fn signature_count_from_source(source: &[u8]) -> PyResult<usize> {
+    let message = prepare_message_for_content(source).map_err(to_py_err)?;
+    match message {
+        PgpMessage::Signed { reader, .. } => Ok(reader.num_signatures()),
+        PgpMessage::Encrypted { .. } => Err(to_py_err(
+            "message must be decrypted before inspecting signatures",
+        )),
+        _ => Ok(0),
+    }
+}
+
+fn one_pass_signature_count_from_source(source: &[u8]) -> PyResult<usize> {
+    let message = prepare_message_for_content(source).map_err(to_py_err)?;
+    match message {
+        PgpMessage::Signed { reader, .. } => Ok(reader.num_one_pass_signatures()),
+        PgpMessage::Encrypted { .. } => Err(to_py_err(
+            "message must be decrypted before inspecting signatures",
+        )),
+        _ => Ok(0),
+    }
+}
+
+fn regular_signature_count_from_source(source: &[u8]) -> PyResult<usize> {
+    let message = prepare_message_for_content(source).map_err(to_py_err)?;
+    match message {
+        PgpMessage::Signed { reader, .. } => Ok(reader.num_regular_signatures()),
+        PgpMessage::Encrypted { .. } => Err(to_py_err(
+            "message must be decrypted before inspecting signatures",
+        )),
+        _ => Ok(0),
+    }
+}
+
+fn signature_infos_from_source(source: &[u8]) -> PyResult<Vec<SignatureInfo>> {
+    let message = prepare_message_for_content(source).map_err(to_py_err)?;
+    signature_infos_from_signed_message(message)
+}
+
+fn verify_signature_from_source(
+    source: &[u8],
+    key: &SignedPublicKey,
+    index: usize,
+) -> PyResult<SignatureInfo> {
+    let message = prepare_message_for_content(source).map_err(to_py_err)?;
+    verify_message_signature_info(message, key, index)
 }
 
 fn password_from_option(password: Option<&str>) -> Password {
@@ -170,6 +255,23 @@ fn signature_info_from_signature(signature: &Signature, is_one_pass: bool) -> Si
 fn signature_info_from_full_signature(signature: &FullSignaturePacket) -> SignatureInfo {
     let is_one_pass = matches!(signature, FullSignaturePacket::Ops { .. });
     signature_info_from_signature(signature.signature(), is_one_pass)
+}
+
+#[derive(Clone)]
+struct DecryptedSignature {
+    signature: Signature,
+    is_one_pass: bool,
+}
+
+fn decrypted_signature_from_full_signature(signature: &FullSignaturePacket) -> DecryptedSignature {
+    DecryptedSignature {
+        signature: signature.signature().clone(),
+        is_one_pass: matches!(signature, FullSignaturePacket::Ops { .. }),
+    }
+}
+
+fn signature_info_from_decrypted_signature(signature: &DecryptedSignature) -> SignatureInfo {
+    signature_info_from_signature(&signature.signature, signature.is_one_pass)
 }
 
 #[derive(Clone, Copy)]
@@ -448,6 +550,15 @@ fn decrypted_message_from_parsed(mut message: PgpMessage<'_>) -> PyResult<Decryp
         .literal_data_header()
         .map(|header| header.file_name().to_vec());
     let payload = message.as_data_vec().map_err(to_py_err)?;
+    let signatures = match &message {
+        PgpMessage::Signed { reader, .. } => reader
+            .signatures()
+            .ok_or_else(|| to_py_err("cannot inspect signatures before reading the message"))?
+            .iter()
+            .map(decrypted_signature_from_full_signature)
+            .collect(),
+        _ => Vec::new(),
+    };
 
     Ok(DecryptedMessage {
         kind: kind.to_string(),
@@ -458,6 +569,7 @@ fn decrypted_message_from_parsed(mut message: PgpMessage<'_>) -> PyResult<Decryp
         payload,
         literal_mode,
         literal_filename,
+        signatures,
     })
 }
 
@@ -578,78 +690,39 @@ impl Message {
 
     /// Read the inner payload as bytes, automatically decompressing nested compressed layers.
     fn payload_bytes(&self) -> PyResult<Vec<u8>> {
-        let mut message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
-        if matches!(message, PgpMessage::Encrypted { .. }) {
-            return Err(to_py_err(
-                "message must be decrypted before reading payload",
-            ));
-        }
-        message.as_data_vec().map_err(to_py_err)
+        payload_bytes_from_source(&self.source)
     }
 
     /// Read the inner payload as UTF-8 text, automatically decompressing nested compressed layers.
     fn payload_text(&self) -> PyResult<String> {
-        let mut message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
-        if matches!(message, PgpMessage::Encrypted { .. }) {
-            return Err(to_py_err(
-                "message must be decrypted before reading payload",
-            ));
-        }
-        message.as_data_string().map_err(to_py_err)
+        payload_text_from_source(&self.source)
     }
 
     /// Return the literal data mode after automatic decompression, if a literal layer exists.
     fn literal_mode(&self) -> PyResult<Option<String>> {
-        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
-        Ok(message
-            .literal_data_header()
-            .map(|header| data_mode_name(header.mode())))
+        literal_mode_from_source(&self.source)
     }
 
     /// Return the literal file name octets after automatic decompression, if available.
     fn literal_filename(&self) -> PyResult<Option<Vec<u8>>> {
-        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
-        Ok(message
-            .literal_data_header()
-            .map(|header| header.file_name().to_vec()))
+        literal_filename_from_source(&self.source)
     }
 
     /// Return the number of signatures after automatic decompression.
     ///
     /// For signed messages this includes both one-pass and prefixed signatures.
     fn signature_count(&self) -> PyResult<usize> {
-        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
-        match message {
-            PgpMessage::Signed { reader, .. } => Ok(reader.num_signatures()),
-            PgpMessage::Encrypted { .. } => Err(to_py_err(
-                "message must be decrypted before inspecting signatures",
-            )),
-            _ => Ok(0),
-        }
+        signature_count_from_source(&self.source)
     }
 
     /// Return the number of one-pass signatures after automatic decompression.
     fn one_pass_signature_count(&self) -> PyResult<usize> {
-        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
-        match message {
-            PgpMessage::Signed { reader, .. } => Ok(reader.num_one_pass_signatures()),
-            PgpMessage::Encrypted { .. } => Err(to_py_err(
-                "message must be decrypted before inspecting signatures",
-            )),
-            _ => Ok(0),
-        }
+        one_pass_signature_count_from_source(&self.source)
     }
 
     /// Return the number of prefixed (non-one-pass) signatures after automatic decompression.
     fn regular_signature_count(&self) -> PyResult<usize> {
-        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
-        match message {
-            PgpMessage::Signed { reader, .. } => Ok(reader.num_regular_signatures()),
-            PgpMessage::Encrypted { .. } => Err(to_py_err(
-                "message must be decrypted before inspecting signatures",
-            )),
-            _ => Ok(0),
-        }
+        regular_signature_count_from_source(&self.source)
     }
 
     /// Return metadata for each signature packet on a signed message.
@@ -657,8 +730,7 @@ impl Message {
     /// This reads the message to the end to finalize one-pass signature verification state,
     /// mirroring the requirements of RFC 9580 one-pass signatures.
     fn signature_infos(&self) -> PyResult<Vec<SignatureInfo>> {
-        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
-        signature_infos_from_signed_message(message)
+        signature_infos_from_source(&self.source)
     }
 
     /// Verify a specific signature on the message and return its metadata.
@@ -667,8 +739,7 @@ impl Message {
     /// :meth:`signature_infos`.
     #[pyo3(signature = (key, index=0))]
     fn verify_signature(&self, key: PyRef<'_, PublicKey>, index: usize) -> PyResult<SignatureInfo> {
-        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
-        verify_message_signature_info(message, &key.inner, index)
+        verify_signature_from_source(&self.source, &key.inner, index)
     }
 
     /// Verify a signed message against a public key.
@@ -682,6 +753,9 @@ impl Message {
     }
 
     /// Decrypt an encrypted message using a secret key and optional key-protection password.
+    ///
+    /// The returned :class:`DecryptedMessage` preserves signature-inspection and verification
+    /// helpers so encrypted-and-signed messages can still be verified after decryption.
     #[pyo3(signature = (key, password=None))]
     fn decrypt(
         &self,
@@ -697,6 +771,9 @@ impl Message {
     }
 
     /// Decrypt an encrypted message using a message password.
+    ///
+    /// The returned :class:`DecryptedMessage` preserves signature-inspection helpers for any
+    /// signed payload revealed by decryption.
     fn decrypt_with_password(&self, password: &str) -> PyResult<DecryptedMessage> {
         let message_password = Password::from(password);
         let (message, _) = parse_message(&self.source).map_err(to_py_err)?;
@@ -714,7 +791,10 @@ impl Message {
     }
 }
 
-/// A decrypted OpenPGP message with eagerly extracted payload and metadata.
+/// A decrypted OpenPGP message with eagerly extracted payload, metadata, and signatures.
+///
+/// The decrypted payload is materialized once so Python code can continue inspecting or verifying
+/// signed content that was revealed by decryption.
 #[pyclass(module = "openpgp")]
 #[derive(Clone)]
 struct DecryptedMessage {
@@ -726,6 +806,7 @@ struct DecryptedMessage {
     payload: Vec<u8>,
     literal_mode: Option<String>,
     literal_filename: Option<Vec<u8>>,
+    signatures: Vec<DecryptedSignature>,
 }
 
 #[pymethods]
@@ -778,6 +859,66 @@ impl DecryptedMessage {
     /// The literal file name octets after automatic decompression, if available.
     fn literal_filename(&self) -> Option<Vec<u8>> {
         self.literal_filename.clone()
+    }
+
+    /// Return the number of signatures revealed by decryption and automatic decompression.
+    fn signature_count(&self) -> usize {
+        self.signatures.len()
+    }
+
+    /// Return the number of one-pass signatures revealed by decryption.
+    fn one_pass_signature_count(&self) -> usize {
+        self.signatures
+            .iter()
+            .filter(|signature| signature.is_one_pass)
+            .count()
+    }
+
+    /// Return the number of prefixed (non-one-pass) signatures revealed by decryption.
+    fn regular_signature_count(&self) -> usize {
+        self.signatures
+            .iter()
+            .filter(|signature| !signature.is_one_pass)
+            .count()
+    }
+
+    /// Return metadata for every signature packet revealed by decryption.
+    fn signature_infos(&self) -> Vec<SignatureInfo> {
+        self.signatures
+            .iter()
+            .map(signature_info_from_decrypted_signature)
+            .collect()
+    }
+
+    /// Verify a specific signature on the decrypted payload and return its metadata.
+    ///
+    /// The default index of ``0`` corresponds to the first signature reported by
+    /// :meth:`signature_infos`.
+    #[pyo3(signature = (key, index=0))]
+    fn verify_signature(&self, key: PyRef<'_, PublicKey>, index: usize) -> PyResult<SignatureInfo> {
+        if self.signatures.is_empty() {
+            return Err(to_py_err("message was not signed"));
+        }
+
+        let signature = self
+            .signatures
+            .get(index)
+            .ok_or_else(|| to_py_err("signature index out of range"))?;
+        signature
+            .signature
+            .verify(&key.inner, Cursor::new(self.payload.as_slice()))
+            .map_err(to_py_err)?;
+        Ok(signature_info_from_decrypted_signature(signature))
+    }
+
+    /// Verify a signed decrypted payload against a public key.
+    ///
+    /// By default, this verifies the first signature on the decrypted payload. Pass ``index`` to
+    /// target a later signature in a multi-signed payload.
+    #[pyo3(signature = (key, index=0))]
+    fn verify(&self, key: PyRef<'_, PublicKey>, index: usize) -> PyResult<()> {
+        let _ = self.verify_signature(key, index)?;
+        Ok(())
     }
 
     fn __repr__(&self) -> String {

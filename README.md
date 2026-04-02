@@ -62,6 +62,13 @@ recipient_encrypted = encrypt_message_to_recipient(b"secret", public_key)
 recipient_message, _ = Message.from_armor(recipient_encrypted)
 recipient_decrypted = recipient_message.decrypt(secret_key)
 assert recipient_decrypted.payload_bytes() == b"secret"
+assert recipient_decrypted.signature_infos() == []
+
+# Existing encrypted-and-signed messages can still be inspected and verified after decryption.
+encrypted_signed_message, _ = Message.from_armor(encrypted_signed_armor)
+decrypted_signed = encrypted_signed_message.decrypt(secret_key)
+assert decrypted_signed.signature_count() == 1
+decrypted_signed.verify(public_key)
 ```
 
 ## Current binding surface
@@ -72,7 +79,8 @@ assert recipient_decrypted.payload_bytes() == b"secret"
 - Serialize keys back to binary packets or ASCII armor.
 - Parse OpenPGP messages into reusable Python `Message` objects.
 - Inspect top-level message metadata and read signed, literal, or compressed payloads.
-- Decrypt encrypted messages to eager `DecryptedMessage` results using a secret key or password.
+- Decrypt encrypted messages to `DecryptedMessage` results using a secret key or password.
+- Continue inspecting or verifying nested signed payloads after decryption through the same signature helpers exposed on `Message`.
 - Create password-encrypted or recipient-encrypted OpenPGP messages.
 - Parse, serialize, create, and verify detached signatures.
 - Inspect detached, inline, and cleartext signature packet metadata through `SignatureInfo`.

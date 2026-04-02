@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+from typing import TypedDict, cast
 
 import pytest
 
@@ -22,6 +24,19 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 def read_fixture_text(name: str) -> str:
     return (FIXTURES / name).read_text()
+
+
+class OpenPGPInteropDecryptCase(TypedDict):
+    type: str
+    decryptKey: str
+    passphrase: str
+    verifyKey: str
+    filename: str
+    textcontent: str
+
+
+def read_fixture_json(name: str) -> OpenPGPInteropDecryptCase:
+    return cast(OpenPGPInteropDecryptCase, json.loads(read_fixture_text(name)))
 
 
 def load_public_key_fixture(name: str) -> PublicKey:
@@ -161,6 +176,10 @@ def test_encrypt_and_decrypt_message_with_password_seipdv1() -> None:
 
     assert decrypted.kind == "literal"
     assert decrypted.literal_filename() == b""
+    assert decrypted.signature_count() == 0
+    assert decrypted.one_pass_signature_count() == 0
+    assert decrypted.regular_signature_count() == 0
+    assert decrypted.signature_infos() == []
     assert decrypted.payload_text() == "secret payload"
 
 
@@ -195,7 +214,65 @@ def test_encrypt_and_decrypt_message_to_recipient() -> None:
     assert headers == {}
     assert message.kind == "encrypted"
     assert decrypted.literal_filename() == b""
+    assert decrypted.signature_infos() == []
     assert decrypted.payload_bytes() == b"recipient payload"
+
+    with pytest.raises(ValueError, match="message was not signed"):
+        decrypted.verify(public_key)
+
+
+@pytest.mark.parametrize(
+    "case_name",
+    [
+        "gnupg-v1-001",
+        "gnupg-v2-1-5-001",
+    ],
+)
+def test_decrypted_signed_openpgp_interop_message_supports_signature_verification(
+    case_name: str,
+) -> None:
+    """Adapt upstream decrypt+verify coverage from rpgp/tests/message_test.rs."""
+
+    case = read_fixture_json(f"openpgp-interop/{case_name}.json")
+    secret_key, _ = SecretKey.from_armor(
+        read_fixture_text(f"openpgp-interop/{case['decryptKey']}")
+    )
+    public_key, _ = PublicKey.from_armor(
+        read_fixture_text(f"openpgp-interop/{case['verifyKey']}")
+    )
+    message, _ = Message.from_armor(read_fixture_text(f"openpgp-interop/{case_name}.asc"))
+
+    assert case["type"] == "decrypt"
+    secret_key.verify_bindings()
+    public_key.verify_bindings()
+
+    decrypted = message.decrypt(secret_key, case["passphrase"])
+
+    assert decrypted.kind == "compressed"
+    assert decrypted.is_compressed is True
+    assert decrypted.is_signed is False
+    assert decrypted.is_literal is False
+    assert decrypted.payload_text() == case["textcontent"]
+    assert decrypted.literal_filename() == case["filename"].encode()
+    assert decrypted.signature_count() == 1
+    assert decrypted.one_pass_signature_count() == 1
+    assert decrypted.regular_signature_count() == 0
+
+    infos = decrypted.signature_infos()
+
+    assert len(infos) == 1
+    assert infos[0].signature_type == "binary"
+    assert infos[0].hash_algorithm is not None
+    assert infos[0].is_one_pass is True
+
+    verified = decrypted.verify_signature(public_key)
+
+    assert verified.signature_type == infos[0].signature_type
+    assert verified.hash_algorithm == infos[0].hash_algorithm
+    assert verified.signed_hash_value == infos[0].signed_hash_value
+    assert verified.is_one_pass is True
+
+    decrypted.verify(public_key)
 
 
 def test_cleartext_sign_and_verify_round_trip() -> None:
