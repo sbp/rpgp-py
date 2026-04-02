@@ -1,0 +1,14 @@
+[package]
+name = "rpgp-py"
+version = "0.1.0"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "_openpgp"
+crate-type = ["cdylib"]
+
+[dependencies]
+pgp = "0.19"
+pyo3 = { version = "0.27.0", features = ["abi3-py310", "extension-module"] }
+rand = "0.8"
