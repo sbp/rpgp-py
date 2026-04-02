@@ -12,3 +12,4 @@ crate-type = ["cdylib"]
 pgp = "0.19"
 pyo3 = { version = "0.27.0", features = ["abi3-py310", "extension-module"] }
 rand = "0.8"
+smallvec = "1"

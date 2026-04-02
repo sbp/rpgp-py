@@ -1,25 +1,30 @@
-use std::{collections::BTreeMap, io::Cursor};
+use std::{collections::BTreeMap, io::Cursor, sync::Mutex};
 
 use pgp::{
     composed::{
         ArmorOptions, CleartextSignedMessage as PgpCleartextSignedMessage, Deserializable,
-        DetachedSignature as PgpDetachedSignature, FullSignaturePacket, Message as PgpMessage,
-        MessageBuilder, SignedPublicKey, SignedSecretKey,
+        DetachedSignature as PgpDetachedSignature, DsaKeySize as PgpDsaKeySize,
+        EncryptionCaps as PgpEncryptionCaps, FullSignaturePacket, KeyType as PgpKeyType,
+        Message as PgpMessage, MessageBuilder, SecretKeyParams as PgpSecretKeyParams,
+        SecretKeyParamsBuilder as PgpSecretKeyParamsBuilder, SignedPublicKey, SignedSecretKey,
+        SubkeyParams as PgpSubkeyParams, SubkeyParamsBuilder as PgpSubkeyParamsBuilder,
     },
     crypto::{
         aead::{AeadAlgorithm, ChunkSize},
+        ecc_curve::ECCCurve,
         hash::HashAlgorithm,
         sym::SymmetricKeyAlgorithm,
     },
     packet::{DataMode, Signature, SignatureType, SignatureVersion, SignatureVersionSpecific},
     ser::Serialize,
-    types::{CompressionAlgorithm, KeyDetails, Password, StringToKey},
+    types::{CompressionAlgorithm, KeyDetails, KeyVersion, Password, StringToKey, Timestamp},
 };
 use pyo3::{
     exceptions::PyValueError,
     prelude::*,
     types::{PyModule, PyModuleMethods},
 };
+use smallvec::SmallVec;
 
 type Headers = BTreeMap<String, Vec<String>>;
 
@@ -155,6 +160,138 @@ fn password_from_option(password: Option<&str>) -> Password {
     match password {
         Some(password) if !password.is_empty() => password.into(),
         _ => Password::empty(),
+    }
+}
+
+fn key_version_from_number(version: u8) -> PyResult<KeyVersion> {
+    match version {
+        4 => Ok(KeyVersion::V4),
+        6 => Ok(KeyVersion::V6),
+        _ => Err(to_py_err("unsupported key version; expected 4 or 6")),
+    }
+}
+
+fn timestamp_from_seconds(seconds: u32) -> Timestamp {
+    Timestamp::from_secs(seconds)
+}
+
+fn hash_algorithm_from_name(name: &str) -> PyResult<HashAlgorithm> {
+    match name.to_ascii_lowercase().as_str() {
+        "sha1" => Ok(HashAlgorithm::Sha1),
+        "sha224" => Ok(HashAlgorithm::Sha224),
+        "sha256" => Ok(HashAlgorithm::Sha256),
+        "sha384" => Ok(HashAlgorithm::Sha384),
+        "sha512" => Ok(HashAlgorithm::Sha512),
+        "sha3-256" | "sha3_256" => Ok(HashAlgorithm::Sha3_256),
+        "sha3-512" | "sha3_512" => Ok(HashAlgorithm::Sha3_512),
+        _ => Err(to_py_err(
+            "unsupported hash algorithm; expected 'sha1', 'sha224', 'sha256', 'sha384', 'sha512', 'sha3-256', or 'sha3-512'",
+        )),
+    }
+}
+
+fn required_compression_algorithm_from_name(name: &str) -> PyResult<CompressionAlgorithm> {
+    compression_algorithm_from_name(Some(name))?
+        .ok_or_else(|| to_py_err("compression algorithm is required"))
+}
+
+fn curve_from_name(name: &str) -> PyResult<ECCCurve> {
+    match name.to_ascii_lowercase().as_str() {
+        "curve25519" => Ok(ECCCurve::Curve25519),
+        "ed25519" => Ok(ECCCurve::Ed25519),
+        "p256" => Ok(ECCCurve::P256),
+        "p384" => Ok(ECCCurve::P384),
+        "p521" => Ok(ECCCurve::P521),
+        "brainpoolp256r1" => Ok(ECCCurve::BrainpoolP256r1),
+        "brainpoolp384r1" => Ok(ECCCurve::BrainpoolP384r1),
+        "brainpoolp512r1" => Ok(ECCCurve::BrainpoolP512r1),
+        "secp256k1" => Ok(ECCCurve::Secp256k1),
+        _ => Err(to_py_err(
+            "unsupported elliptic-curve name; expected 'curve25519', 'p256', 'p384', 'p521', 'brainpoolp256r1', 'brainpoolp384r1', 'brainpoolp512r1', or 'secp256k1'",
+        )),
+    }
+}
+
+fn dsa_key_size_from_bits(bits: u32) -> PyResult<PgpDsaKeySize> {
+    match bits {
+        1024 => Ok(PgpDsaKeySize::B1024),
+        2048 => Ok(PgpDsaKeySize::B2048),
+        3072 => Ok(PgpDsaKeySize::B3072),
+        _ => Err(to_py_err(
+            "unsupported DSA key size; expected 1024, 2048, or 3072 bits",
+        )),
+    }
+}
+
+fn symmetric_algorithms_from_names(
+    values: Vec<String>,
+) -> PyResult<SmallVec<[SymmetricKeyAlgorithm; 8]>> {
+    let mut algorithms = SmallVec::new();
+    for value in values {
+        algorithms.push(symmetric_algorithm_from_name(&value)?);
+    }
+    Ok(algorithms)
+}
+
+fn hash_algorithms_from_names(values: Vec<String>) -> PyResult<SmallVec<[HashAlgorithm; 8]>> {
+    let mut algorithms = SmallVec::new();
+    for value in values {
+        algorithms.push(hash_algorithm_from_name(&value)?);
+    }
+    Ok(algorithms)
+}
+
+fn compression_algorithms_from_names(
+    values: Vec<String>,
+) -> PyResult<SmallVec<[CompressionAlgorithm; 8]>> {
+    let mut algorithms = SmallVec::new();
+    for value in values {
+        algorithms.push(required_compression_algorithm_from_name(&value)?);
+    }
+    Ok(algorithms)
+}
+
+fn aead_algorithm_preferences_from_names(
+    values: Vec<(String, String)>,
+) -> PyResult<SmallVec<[(SymmetricKeyAlgorithm, AeadAlgorithm); 4]>> {
+    let mut algorithms = SmallVec::new();
+    for (symmetric_algorithm, aead_algorithm) in values {
+        algorithms.push((
+            symmetric_algorithm_from_name(&symmetric_algorithm)?,
+            aead_algorithm_from_name(&aead_algorithm)?,
+        ));
+    }
+    Ok(algorithms)
+}
+
+fn curve_name(curve: &ECCCurve) -> &'static str {
+    match curve {
+        ECCCurve::Curve25519 => "curve25519",
+        ECCCurve::Ed25519 => "ed25519",
+        ECCCurve::P256 => "p256",
+        ECCCurve::P384 => "p384",
+        ECCCurve::P521 => "p521",
+        ECCCurve::BrainpoolP256r1 => "brainpoolp256r1",
+        ECCCurve::BrainpoolP384r1 => "brainpoolp384r1",
+        ECCCurve::BrainpoolP512r1 => "brainpoolp512r1",
+        ECCCurve::Secp256k1 => "secp256k1",
+        ECCCurve::Unknown(_) => "unknown",
+    }
+}
+
+fn key_type_name(key_type: &PgpKeyType) -> String {
+    match key_type {
+        PgpKeyType::Rsa(bits) => format!("rsa({bits})"),
+        PgpKeyType::ECDH(curve) => format!("ecdh('{}')", curve_name(curve)),
+        PgpKeyType::Ed25519Legacy => "ed25519_legacy".to_string(),
+        PgpKeyType::ECDSA(curve) => format!("ecdsa('{}')", curve_name(curve)),
+        PgpKeyType::Dsa(PgpDsaKeySize::B1024) => "dsa(1024)".to_string(),
+        PgpKeyType::Dsa(PgpDsaKeySize::B2048) => "dsa(2048)".to_string(),
+        PgpKeyType::Dsa(PgpDsaKeySize::B3072) => "dsa(3072)".to_string(),
+        PgpKeyType::Ed25519 => "ed25519".to_string(),
+        PgpKeyType::Ed448 => "ed448".to_string(),
+        PgpKeyType::X25519 => "x25519".to_string(),
+        PgpKeyType::X448 => "x448".to_string(),
     }
 }
 
@@ -345,6 +482,399 @@ macro_rules! encrypt_to_recipient {
             ));
         }
     }};
+}
+
+/// Key-flag configuration for encryption-capable OpenPGP keys.
+///
+/// This mirrors rPGP's `EncryptionCaps` builder enum and RFC 9580 key-flags semantics for the
+/// "encrypt communications" and "encrypt storage" flags.
+#[pyclass(module = "openpgp")]
+#[derive(Clone, Copy)]
+struct EncryptionCaps {
+    inner: PgpEncryptionCaps,
+}
+
+#[pymethods]
+impl EncryptionCaps {
+    #[staticmethod]
+    fn none() -> Self {
+        Self {
+            inner: PgpEncryptionCaps::None,
+        }
+    }
+
+    #[staticmethod]
+    fn communication() -> Self {
+        Self {
+            inner: PgpEncryptionCaps::Communication,
+        }
+    }
+
+    #[staticmethod]
+    fn storage() -> Self {
+        Self {
+            inner: PgpEncryptionCaps::Storage,
+        }
+    }
+
+    #[staticmethod]
+    fn all() -> Self {
+        Self {
+            inner: PgpEncryptionCaps::All,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let name = match self.inner {
+            PgpEncryptionCaps::None => "none",
+            PgpEncryptionCaps::Communication => "communication",
+            PgpEncryptionCaps::Storage => "storage",
+            PgpEncryptionCaps::All => "all",
+        };
+        format!("EncryptionCaps.{name}()")
+    }
+}
+
+/// An asymmetric algorithm configuration for OpenPGP key generation.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+struct KeyType {
+    inner: PgpKeyType,
+}
+
+#[pymethods]
+impl KeyType {
+    #[staticmethod]
+    fn rsa(bits: u32) -> Self {
+        Self {
+            inner: PgpKeyType::Rsa(bits),
+        }
+    }
+
+    #[staticmethod]
+    fn dsa(bits: u32) -> PyResult<Self> {
+        Ok(Self {
+            inner: PgpKeyType::Dsa(dsa_key_size_from_bits(bits)?),
+        })
+    }
+
+    #[staticmethod]
+    fn ed25519_legacy() -> Self {
+        Self {
+            inner: PgpKeyType::Ed25519Legacy,
+        }
+    }
+
+    #[staticmethod]
+    fn ed25519() -> Self {
+        Self {
+            inner: PgpKeyType::Ed25519,
+        }
+    }
+
+    #[staticmethod]
+    fn ed448() -> Self {
+        Self {
+            inner: PgpKeyType::Ed448,
+        }
+    }
+
+    #[staticmethod]
+    fn ecdsa(curve: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: PgpKeyType::ECDSA(curve_from_name(curve)?),
+        })
+    }
+
+    #[staticmethod]
+    fn ecdh(curve: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: PgpKeyType::ECDH(curve_from_name(curve)?),
+        })
+    }
+
+    #[staticmethod]
+    fn x25519() -> Self {
+        Self {
+            inner: PgpKeyType::X25519,
+        }
+    }
+
+    #[staticmethod]
+    fn x448() -> Self {
+        Self {
+            inner: PgpKeyType::X448,
+        }
+    }
+
+    fn can_sign(&self) -> bool {
+        self.inner.can_sign()
+    }
+
+    fn can_encrypt(&self) -> bool {
+        self.inner.can_encrypt()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("KeyType.{}", key_type_name(&self.inner))
+    }
+}
+
+/// Built subkey-generation parameters.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+struct SubkeyParams {
+    inner: PgpSubkeyParams,
+}
+
+#[pymethods]
+impl SubkeyParams {
+    fn __repr__(&self) -> String {
+        "SubkeyParams()".to_string()
+    }
+}
+
+/// Builder for subkey-generation parameters.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+struct SubkeyParamsBuilder {
+    inner: PgpSubkeyParamsBuilder,
+}
+
+#[pymethods]
+impl SubkeyParamsBuilder {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: PgpSubkeyParamsBuilder::default(),
+        }
+    }
+
+    fn version<'py>(mut slf: PyRefMut<'py, Self>, value: u8) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner.version(key_version_from_number(value)?);
+        Ok(slf)
+    }
+
+    fn key_type<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        value: PyRef<'_, KeyType>,
+    ) -> PyRefMut<'py, Self> {
+        slf.inner.key_type(value.inner.clone());
+        slf
+    }
+
+    fn can_sign<'py>(mut slf: PyRefMut<'py, Self>, value: bool) -> PyRefMut<'py, Self> {
+        slf.inner.can_sign(value);
+        slf
+    }
+
+    fn can_encrypt<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        value: PyRef<'_, EncryptionCaps>,
+    ) -> PyRefMut<'py, Self> {
+        slf.inner.can_encrypt(value.inner);
+        slf
+    }
+
+    fn can_authenticate<'py>(mut slf: PyRefMut<'py, Self>, value: bool) -> PyRefMut<'py, Self> {
+        slf.inner.can_authenticate(value);
+        slf
+    }
+
+    fn created_at<'py>(mut slf: PyRefMut<'py, Self>, value: u32) -> PyRefMut<'py, Self> {
+        slf.inner.created_at(timestamp_from_seconds(value));
+        slf
+    }
+
+    fn passphrase<'py>(mut slf: PyRefMut<'py, Self>, value: Option<&str>) -> PyRefMut<'py, Self> {
+        slf.inner.passphrase(value.map(str::to_owned));
+        slf
+    }
+
+    fn build(&self) -> PyResult<SubkeyParams> {
+        let inner = self.inner.build().map_err(to_py_err)?;
+        Ok(SubkeyParams { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        "SubkeyParamsBuilder()".to_string()
+    }
+}
+
+/// Built primary-key generation parameters.
+#[pyclass(module = "openpgp")]
+struct SecretKeyParams {
+    inner: Mutex<Option<PgpSecretKeyParams>>,
+}
+
+#[pymethods]
+impl SecretKeyParams {
+    fn generate(&self) -> PyResult<SecretKey> {
+        let params = self
+            .inner
+            .lock()
+            .map_err(|_| to_py_err("key parameter state is unavailable"))?
+            .take()
+            .ok_or_else(|| to_py_err("key parameters have already been consumed"))?;
+        let inner = params.generate(rand::thread_rng()).map_err(to_py_err)?;
+        Ok(SecretKey { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        let consumed = self
+            .inner
+            .lock()
+            .map(|guard| guard.is_none())
+            .unwrap_or(true);
+        format!("SecretKeyParams(consumed={consumed})")
+    }
+}
+
+/// Builder for primary-key generation parameters.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+struct SecretKeyParamsBuilder {
+    inner: PgpSecretKeyParamsBuilder,
+}
+
+#[pymethods]
+impl SecretKeyParamsBuilder {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: PgpSecretKeyParamsBuilder::default(),
+        }
+    }
+
+    fn version<'py>(mut slf: PyRefMut<'py, Self>, value: u8) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner.version(key_version_from_number(value)?);
+        Ok(slf)
+    }
+
+    fn key_type<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        value: PyRef<'_, KeyType>,
+    ) -> PyRefMut<'py, Self> {
+        slf.inner.key_type(value.inner.clone());
+        slf
+    }
+
+    fn can_sign<'py>(mut slf: PyRefMut<'py, Self>, value: bool) -> PyRefMut<'py, Self> {
+        slf.inner.can_sign(value);
+        slf
+    }
+
+    fn can_certify<'py>(mut slf: PyRefMut<'py, Self>, value: bool) -> PyRefMut<'py, Self> {
+        slf.inner.can_certify(value);
+        slf
+    }
+
+    fn can_encrypt<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        value: PyRef<'_, EncryptionCaps>,
+    ) -> PyRefMut<'py, Self> {
+        slf.inner.can_encrypt(value.inner);
+        slf
+    }
+
+    fn can_authenticate<'py>(mut slf: PyRefMut<'py, Self>, value: bool) -> PyRefMut<'py, Self> {
+        slf.inner.can_authenticate(value);
+        slf
+    }
+
+    fn created_at<'py>(mut slf: PyRefMut<'py, Self>, value: u32) -> PyRefMut<'py, Self> {
+        slf.inner.created_at(timestamp_from_seconds(value));
+        slf
+    }
+
+    fn feature_seipd_v1<'py>(mut slf: PyRefMut<'py, Self>, value: bool) -> PyRefMut<'py, Self> {
+        slf.inner.feature_seipd_v1(value);
+        slf
+    }
+
+    fn feature_seipd_v2<'py>(mut slf: PyRefMut<'py, Self>, value: bool) -> PyRefMut<'py, Self> {
+        slf.inner.feature_seipd_v2(value);
+        slf
+    }
+
+    fn preferred_symmetric_algorithms<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        values: Vec<String>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner
+            .preferred_symmetric_algorithms(symmetric_algorithms_from_names(values)?);
+        Ok(slf)
+    }
+
+    fn preferred_hash_algorithms<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        values: Vec<String>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner
+            .preferred_hash_algorithms(hash_algorithms_from_names(values)?);
+        Ok(slf)
+    }
+
+    fn preferred_compression_algorithms<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        values: Vec<String>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner
+            .preferred_compression_algorithms(compression_algorithms_from_names(values)?);
+        Ok(slf)
+    }
+
+    fn preferred_aead_algorithms<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        values: Vec<(String, String)>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner
+            .preferred_aead_algorithms(aead_algorithm_preferences_from_names(values)?);
+        Ok(slf)
+    }
+
+    fn passphrase<'py>(mut slf: PyRefMut<'py, Self>, value: Option<&str>) -> PyRefMut<'py, Self> {
+        slf.inner.passphrase(value.map(str::to_owned));
+        slf
+    }
+
+    fn primary_user_id<'py>(mut slf: PyRefMut<'py, Self>, value: &str) -> PyRefMut<'py, Self> {
+        slf.inner.primary_user_id(value.to_string());
+        slf
+    }
+
+    fn user_id<'py>(mut slf: PyRefMut<'py, Self>, value: &str) -> PyRefMut<'py, Self> {
+        slf.inner.user_id(value.to_string());
+        slf
+    }
+
+    fn user_ids<'py>(mut slf: PyRefMut<'py, Self>, values: Vec<String>) -> PyRefMut<'py, Self> {
+        slf.inner.user_ids(values);
+        slf
+    }
+
+    fn subkey<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        value: PyRef<'_, SubkeyParams>,
+    ) -> PyRefMut<'py, Self> {
+        slf.inner.subkey(value.inner.clone());
+        slf
+    }
+
+    fn build(&self) -> PyResult<SecretKeyParams> {
+        let inner = self.inner.build().map_err(to_py_err)?;
+        Ok(SecretKeyParams {
+            inner: Mutex::new(Some(inner)),
+        })
+    }
+
+    fn generate(&self) -> PyResult<SecretKey> {
+        self.build()?.generate()
+    }
+
+    fn __repr__(&self) -> String {
+        "SecretKeyParamsBuilder()".to_string()
+    }
 }
 
 /// A transferable OpenPGP public key (certificate) as defined by RFC 9580.
@@ -1426,6 +1956,12 @@ fn encrypt_message_with_password(
 
 #[pymodule]
 fn _openpgp(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<EncryptionCaps>()?;
+    module.add_class::<KeyType>()?;
+    module.add_class::<SubkeyParams>()?;
+    module.add_class::<SubkeyParamsBuilder>()?;
+    module.add_class::<SecretKeyParams>()?;
+    module.add_class::<SecretKeyParamsBuilder>()?;
     module.add_class::<PublicKey>()?;
     module.add_class::<SecretKey>()?;
     module.add_class::<Message>()?;

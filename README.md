@@ -14,7 +14,9 @@ uv sync
 uv run maturin develop
 ```
 
-## Example
+## Examples
+
+### Parse, sign, encrypt, and inspect OpenPGP data
 
 ```python
 from openpgp import (
@@ -62,13 +64,55 @@ recipient_encrypted = encrypt_message_to_recipient(b"secret", public_key)
 recipient_message, _ = Message.from_armor(recipient_encrypted)
 recipient_decrypted = recipient_message.decrypt(secret_key)
 assert recipient_decrypted.payload_bytes() == b"secret"
-assert recipient_decrypted.signature_infos() == []
+```
 
-# Existing encrypted-and-signed messages can still be inspected and verified after decryption.
-encrypted_signed_message, _ = Message.from_armor(encrypted_signed_armor)
-decrypted_signed = encrypted_signed_message.decrypt(secret_key)
-assert decrypted_signed.signature_count() == 1
-decrypted_signed.verify(public_key)
+### Generate RFC 9580-compatible key material with builder APIs
+
+```python
+from openpgp import (
+    EncryptionCaps,
+    KeyType,
+    Message,
+    SecretKeyParamsBuilder,
+    SubkeyParamsBuilder,
+    encrypt_message_to_recipient,
+    sign_message,
+)
+
+secret_key = (
+    SecretKeyParamsBuilder()
+    .version(6)
+    .key_type(KeyType.ed25519())
+    .can_certify(True)
+    .can_sign(True)
+    .feature_seipd_v2(True)
+    .primary_user_id("Me <me@example.com>")
+    .preferred_symmetric_algorithms(["aes256", "aes192", "aes128"])
+    .preferred_hash_algorithms(["sha256", "sha384", "sha512", "sha224"])
+    .preferred_compression_algorithms(["zlib", "zip"])
+    .subkey(
+        SubkeyParamsBuilder()
+        .version(6)
+        .key_type(KeyType.x25519())
+        .can_encrypt(EncryptionCaps.all())
+        .build()
+    )
+    .build()
+    .generate()
+)
+
+public_key = secret_key.to_public_key()
+secret_key.verify_bindings()
+public_key.verify_bindings()
+
+signed = sign_message(b"generated payload", secret_key)
+message, _ = Message.from_armor(signed)
+message.verify(public_key)
+assert message.payload_bytes() == b"generated payload"
+
+encrypted = encrypt_message_to_recipient(b"secret", public_key)
+encrypted_message, _ = Message.from_armor(encrypted)
+assert encrypted_message.decrypt(secret_key).payload_bytes() == b"secret"
 ```
 
 ## Current binding surface
@@ -77,6 +121,8 @@ decrypted_signed.verify(public_key)
 - Parse ASCII-armored or binary transferable secret keys.
 - Expose key metadata such as fingerprints, key IDs, subkey counts, and user IDs.
 - Serialize keys back to binary packets or ASCII armor.
+- Generate new transferable secret/public keys with typed builder APIs based on rPGP's `SecretKeyParamsBuilder` and `SubkeyParamsBuilder`.
+- Configure key-generation parameters such as key versions, key flags, user IDs, preferred algorithms, SEIPD feature flags, passphrase protection, and subkeys.
 - Parse OpenPGP messages into reusable Python `Message` objects.
 - Inspect top-level message metadata and read signed, literal, or compressed payloads.
 - Decrypt encrypted messages to `DecryptedMessage` results using a secret key or password.

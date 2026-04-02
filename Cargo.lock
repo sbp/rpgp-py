@@ -1318,6 +1318,7 @@ dependencies = [
  "pgp",
  "pyo3",
  "rand",
+ "smallvec",
 ]
 
 [[package]]
