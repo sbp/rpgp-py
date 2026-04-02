@@ -1,21 +1,31 @@
 from ._openpgp import (
+    CleartextSignedMessage,
+    DecryptedMessage,
     DetachedSignature,
     Message,
     MessageInfo,
     PublicKey,
     SecretKey,
+    encrypt_message_to_recipient,
+    encrypt_message_with_password,
     inspect_message,
     inspect_message_bytes,
+    sign_cleartext_message,
     sign_message,
 )
 
 __all__ = [
+    "CleartextSignedMessage",
+    "DecryptedMessage",
     "DetachedSignature",
     "Message",
     "MessageInfo",
     "PublicKey",
     "SecretKey",
+    "encrypt_message_to_recipient",
+    "encrypt_message_with_password",
     "inspect_message",
     "inspect_message_bytes",
+    "sign_cleartext_message",
     "sign_message",
 ]

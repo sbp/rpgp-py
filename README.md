@@ -17,11 +17,20 @@ uv run maturin develop
 ## Example
 
 ```python
-from openpgp import DetachedSignature, Message, PublicKey, SecretKey, sign_message
+from openpgp import (
+    CleartextSignedMessage,
+    DetachedSignature,
+    Message,
+    PublicKey,
+    SecretKey,
+    encrypt_message_to_recipient,
+    encrypt_message_with_password,
+    sign_cleartext_message,
+    sign_message,
+)
 
-public_key, headers = PublicKey.from_armor(public_key_armor)
+public_key, _ = PublicKey.from_armor(public_key_armor)
 public_key.verify_bindings()
-print(public_key.user_ids)
 
 secret_key, _ = SecretKey.from_armor(secret_key_armor)
 assert secret_key.to_public_key().fingerprint == public_key.fingerprint
@@ -33,6 +42,21 @@ assert message.payload_text() == "hello world"
 
 signature = DetachedSignature.sign_binary(b"hello world", secret_key)
 signature.verify(public_key, b"hello world")
+
+cleartext = sign_cleartext_message("hello\n-world\n", secret_key)
+cleartext_message, _ = CleartextSignedMessage.from_armor(cleartext)
+assert "Hash: SHA256" in cleartext
+assert cleartext_message.signed_text() == "hello\r\n-world\r\n"
+
+password_encrypted = encrypt_message_with_password(b"secret", "hunter2")
+encrypted_message, _ = Message.from_armor(password_encrypted)
+decrypted = encrypted_message.decrypt_with_password("hunter2")
+assert decrypted.payload_text() == "secret"
+
+recipient_encrypted = encrypt_message_to_recipient(b"secret", public_key)
+recipient_message, _ = Message.from_armor(recipient_encrypted)
+recipient_decrypted = recipient_message.decrypt(secret_key)
+assert recipient_decrypted.payload_bytes() == b"secret"
 ```
 
 ## Current binding surface
@@ -42,10 +66,12 @@ signature.verify(public_key, b"hello world")
 - Expose key metadata such as fingerprints, key IDs, subkey counts, and user IDs.
 - Serialize keys back to binary packets or ASCII armor.
 - Parse OpenPGP messages into reusable Python `Message` objects.
-- Read signed/literal/compressed message payloads and inspect literal metadata.
-- Verify signed messages against public keys.
+- Inspect top-level message metadata and read signed, literal, or compressed payloads.
+- Decrypt encrypted messages to eager `DecryptedMessage` results using a secret key or password.
+- Create password-encrypted or recipient-encrypted OpenPGP messages.
 - Parse, serialize, create, and verify detached signatures.
 - Create simple signed OpenPGP messages with `sign_message(...)`.
+- Parse, create, serialize, and verify cleartext signed messages.
 - Verify key self-signatures and bindings.
 - Convert a parsed secret key to its public-key view.
 - Inspect whether OpenPGP message data is literal, compressed, signed, or encrypted.

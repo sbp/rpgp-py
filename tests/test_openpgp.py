@@ -1,4 +1,19 @@
-from openpgp import DetachedSignature, Message, PublicKey, SecretKey, sign_message
+from pathlib import Path
+
+import pytest
+
+from openpgp import (
+    CleartextSignedMessage,
+    DetachedSignature,
+    Message,
+    PublicKey,
+    SecretKey,
+    encrypt_message_to_recipient,
+    encrypt_message_with_password,
+    inspect_message,
+    sign_cleartext_message,
+    sign_message,
+)
 
 
 PUBLIC_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
@@ -94,3 +109,82 @@ def test_sign_and_verify_detached_signature() -> None:
     armored_signature, headers = DetachedSignature.from_armor(signature.to_armored())
     assert headers == {}
     armored_signature.verify(public_key, payload)
+
+
+def test_encrypt_and_decrypt_message_with_password_seipdv1() -> None:
+    armored = encrypt_message_with_password(
+        b"secret payload",
+        "hunter2",
+        file_name="note.txt",
+        version="seipd-v1",
+    )
+    message, headers = Message.from_armor(armored)
+
+    assert headers == {}
+    assert inspect_message(armored).kind == "encrypted"
+    assert message.kind == "encrypted"
+    with pytest.raises(ValueError, match="message must be decrypted"):
+        message.payload_text()
+
+    decrypted = message.decrypt_with_password("hunter2")
+
+    assert decrypted.kind == "literal"
+    assert decrypted.literal_filename() == b""
+    assert decrypted.payload_text() == "secret payload"
+
+
+def test_encrypt_and_decrypt_message_with_password_seipdv2_and_compression() -> None:
+    armored = encrypt_message_with_password(
+        b"compressed payload",
+        "opensesame",
+        version="seipd-v2",
+        compression="zlib",
+    )
+    message, _ = Message.from_armor(armored)
+    decrypted = message.decrypt_with_password("opensesame")
+
+    assert decrypted.kind == "compressed"
+    assert decrypted.is_compressed is True
+    assert decrypted.literal_mode() == "binary"
+    assert decrypted.payload_text() == "compressed payload"
+
+
+def test_encrypt_and_decrypt_message_to_recipient() -> None:
+    secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    public_key = secret_key.to_public_key()
+
+    armored = encrypt_message_to_recipient(
+        b"recipient payload",
+        public_key,
+        file_name="message.bin",
+    )
+    message, headers = Message.from_armor(armored)
+    decrypted = message.decrypt(secret_key)
+
+    assert headers == {}
+    assert message.kind == "encrypted"
+    assert decrypted.literal_filename() == b""
+    assert decrypted.payload_bytes() == b"recipient payload"
+
+
+def test_cleartext_sign_and_verify_round_trip() -> None:
+    fixture = Path(__file__).resolve().parent / "fixtures" / "cleartext-key-01.asc"
+    secret_key, _ = SecretKey.from_armor(fixture.read_text())
+    public_key = secret_key.to_public_key()
+    text = "hello\n-world-what-\nis up\n"
+
+    armored = sign_cleartext_message(text, secret_key)
+    message, headers = CleartextSignedMessage.from_armor(armored)
+
+    assert headers == {}
+    assert "-----BEGIN PGP SIGNED MESSAGE-----" in armored
+    assert "Hash: SHA256" in armored
+    assert "- -world-what-" in message.text
+    assert message.signed_text() == "hello\r\n-world-what-\r\nis up\r\n"
+    message.verify(public_key)
+
+    reparsed, round_trip_headers = CleartextSignedMessage.from_armor(
+        message.to_armored()
+    )
+    assert round_trip_headers == {}
+    assert reparsed.signed_text() == message.signed_text()
