@@ -23,6 +23,7 @@ from openpgp import (
     Message,
     PublicKey,
     SecretKey,
+    SignatureInfo,
     encrypt_message_to_recipient,
     encrypt_message_with_password,
     sign_cleartext_message,
@@ -41,12 +42,16 @@ message.verify(public_key)
 assert message.payload_text() == "hello world"
 
 signature = DetachedSignature.sign_binary(b"hello world", secret_key)
+info = signature.signature_info()
+assert info.signature_type == "binary"
 signature.verify(public_key, b"hello world")
 
 cleartext = sign_cleartext_message("hello\n-world\n", secret_key)
 cleartext_message, _ = CleartextSignedMessage.from_armor(cleartext)
 assert "Hash: SHA256" in cleartext
 assert cleartext_message.signed_text() == "hello\r\n-world\r\n"
+assert cleartext_message.signature_count() == 1
+assert cleartext_message.signature_infos()[0].hash_algorithm == "SHA256"
 
 password_encrypted = encrypt_message_with_password(b"secret", "hunter2")
 encrypted_message, _ = Message.from_armor(password_encrypted)
@@ -70,8 +75,10 @@ assert recipient_decrypted.payload_bytes() == b"secret"
 - Decrypt encrypted messages to eager `DecryptedMessage` results using a secret key or password.
 - Create password-encrypted or recipient-encrypted OpenPGP messages.
 - Parse, serialize, create, and verify detached signatures.
+- Inspect detached, inline, and cleartext signature packet metadata through `SignatureInfo`.
 - Create simple signed OpenPGP messages with `sign_message(...)`.
-- Parse, create, serialize, and verify cleartext signed messages.
+- Introspect and selectively verify multi-signed inline messages, including one-pass signatures.
+- Parse, create, serialize, and verify cleartext signed messages, including messages with multiple signatures.
 - Verify key self-signatures and bindings.
 - Convert a parsed secret key to its public-key view.
 - Inspect whether OpenPGP message data is literal, compressed, signed, or encrypted.

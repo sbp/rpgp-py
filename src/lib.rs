@@ -3,15 +3,15 @@ use std::{collections::BTreeMap, io::Cursor};
 use pgp::{
     composed::{
         ArmorOptions, CleartextSignedMessage as PgpCleartextSignedMessage, Deserializable,
-        DetachedSignature as PgpDetachedSignature, Message as PgpMessage, MessageBuilder,
-        SignedPublicKey, SignedSecretKey,
+        DetachedSignature as PgpDetachedSignature, FullSignaturePacket, Message as PgpMessage,
+        MessageBuilder, SignedPublicKey, SignedSecretKey,
     },
     crypto::{
         aead::{AeadAlgorithm, ChunkSize},
         hash::HashAlgorithm,
         sym::SymmetricKeyAlgorithm,
     },
-    packet::DataMode,
+    packet::{DataMode, Signature, SignatureType, SignatureVersion, SignatureVersionSpecific},
     ser::Serialize,
     types::{CompressionAlgorithm, KeyDetails, Password, StringToKey},
 };
@@ -90,6 +90,86 @@ fn data_mode_name(mode: DataMode) -> String {
         DataMode::Other(_) => "other",
     }
     .to_string()
+}
+
+fn signature_version_number(version: SignatureVersion) -> u8 {
+    match version {
+        SignatureVersion::V2 => 2,
+        SignatureVersion::V3 => 3,
+        SignatureVersion::V4 => 4,
+        SignatureVersion::V5 => 5,
+        SignatureVersion::V6 => 6,
+        SignatureVersion::Other(value) => value,
+    }
+}
+
+fn signature_type_name(signature_type: SignatureType) -> String {
+    match signature_type {
+        SignatureType::Binary => "binary",
+        SignatureType::Text => "text",
+        SignatureType::Standalone => "standalone",
+        SignatureType::CertGeneric => "cert-generic",
+        SignatureType::CertPersona => "cert-persona",
+        SignatureType::CertCasual => "cert-casual",
+        SignatureType::CertPositive => "cert-positive",
+        SignatureType::SubkeyBinding => "subkey-binding",
+        SignatureType::KeyBinding => "primary-key-binding",
+        SignatureType::Key => "direct-key",
+        SignatureType::KeyRevocation => "key-revocation",
+        SignatureType::SubkeyRevocation => "subkey-revocation",
+        SignatureType::CertRevocation => "cert-revocation",
+        SignatureType::Timestamp => "timestamp",
+        SignatureType::ThirdParty => "third-party",
+        SignatureType::Other(_) => "other",
+    }
+    .to_string()
+}
+
+fn signature_salt(signature: &Signature) -> Option<Vec<u8>> {
+    signature
+        .config()
+        .and_then(|config| match &config.version_specific {
+            SignatureVersionSpecific::V6 { salt } => Some(salt.clone()),
+            _ => None,
+        })
+}
+
+fn signature_info_from_signature(signature: &Signature, is_one_pass: bool) -> SignatureInfo {
+    SignatureInfo {
+        version: signature_version_number(signature.version()),
+        signature_type: signature.typ().map(signature_type_name),
+        hash_algorithm: signature.hash_alg().map(|algorithm| algorithm.to_string()),
+        public_key_algorithm: signature
+            .config()
+            .map(|config| format!("{:?}", config.pub_alg)),
+        issuer_key_ids: signature
+            .issuer_key_id()
+            .iter()
+            .map(|key_id| key_id.to_string())
+            .collect(),
+        issuer_fingerprints: signature
+            .issuer_fingerprint()
+            .iter()
+            .map(|fingerprint| fingerprint.to_string())
+            .collect(),
+        creation_time: signature.created().map(|timestamp| timestamp.as_secs()),
+        signature_expiration_seconds: signature
+            .signature_expiration_time()
+            .map(|duration| duration.as_secs()),
+        signer_user_id: signature
+            .signers_userid()
+            .map(|user_id| String::from_utf8_lossy(user_id.as_ref()).into_owned()),
+        signed_hash_value: signature
+            .signed_hash_value()
+            .map(|signed_hash_value| signed_hash_value.to_vec()),
+        salt: signature_salt(signature),
+        is_one_pass,
+    }
+}
+
+fn signature_info_from_full_signature(signature: &FullSignaturePacket) -> SignatureInfo {
+    let is_one_pass = matches!(signature, FullSignaturePacket::Ops { .. });
+    signature_info_from_signature(signature.signature(), is_one_pass)
 }
 
 #[derive(Clone, Copy)]
@@ -381,6 +461,63 @@ fn decrypted_message_from_parsed(mut message: PgpMessage<'_>) -> PyResult<Decryp
     })
 }
 
+fn signature_infos_from_signed_message(
+    mut message: PgpMessage<'_>,
+) -> PyResult<Vec<SignatureInfo>> {
+    message.as_data_vec().map_err(to_py_err)?;
+
+    match &message {
+        PgpMessage::Signed { reader, .. } => Ok(reader
+            .signatures()
+            .ok_or_else(|| to_py_err("cannot inspect signatures before reading the message"))?
+            .iter()
+            .map(signature_info_from_full_signature)
+            .collect()),
+        PgpMessage::Encrypted { .. } => Err(to_py_err(
+            "message must be decrypted before inspecting signatures",
+        )),
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn verify_message_signature_info(
+    mut message: PgpMessage<'_>,
+    key: &SignedPublicKey,
+    index: usize,
+) -> PyResult<SignatureInfo> {
+    message.as_data_vec().map_err(to_py_err)?;
+
+    let info = match &message {
+        PgpMessage::Signed { reader, .. } => {
+            let signatures = reader
+                .signatures()
+                .ok_or_else(|| to_py_err("cannot verify signatures before reading the message"))?;
+            let signature = signatures
+                .get(index)
+                .ok_or_else(|| to_py_err("signature index out of range"))?;
+            signature_info_from_full_signature(signature)
+        }
+        PgpMessage::Encrypted { .. } => {
+            return Err(to_py_err(
+                "message must be decrypted before verifying signatures",
+            ));
+        }
+        PgpMessage::Literal { .. } => {
+            return Err(to_py_err("message was not signed"));
+        }
+        PgpMessage::Compressed { .. } => {
+            return Err(to_py_err(
+                "message must be decompressed before verifying signatures",
+            ));
+        }
+    };
+
+    message
+        .verify_nested_explicit(index, key)
+        .map_err(to_py_err)?;
+    Ok(info)
+}
+
 #[pymethods]
 impl Message {
     /// Parse an ASCII-armored OpenPGP message.
@@ -477,10 +614,70 @@ impl Message {
             .map(|header| header.file_name().to_vec()))
     }
 
+    /// Return the number of signatures after automatic decompression.
+    ///
+    /// For signed messages this includes both one-pass and prefixed signatures.
+    fn signature_count(&self) -> PyResult<usize> {
+        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
+        match message {
+            PgpMessage::Signed { reader, .. } => Ok(reader.num_signatures()),
+            PgpMessage::Encrypted { .. } => Err(to_py_err(
+                "message must be decrypted before inspecting signatures",
+            )),
+            _ => Ok(0),
+        }
+    }
+
+    /// Return the number of one-pass signatures after automatic decompression.
+    fn one_pass_signature_count(&self) -> PyResult<usize> {
+        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
+        match message {
+            PgpMessage::Signed { reader, .. } => Ok(reader.num_one_pass_signatures()),
+            PgpMessage::Encrypted { .. } => Err(to_py_err(
+                "message must be decrypted before inspecting signatures",
+            )),
+            _ => Ok(0),
+        }
+    }
+
+    /// Return the number of prefixed (non-one-pass) signatures after automatic decompression.
+    fn regular_signature_count(&self) -> PyResult<usize> {
+        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
+        match message {
+            PgpMessage::Signed { reader, .. } => Ok(reader.num_regular_signatures()),
+            PgpMessage::Encrypted { .. } => Err(to_py_err(
+                "message must be decrypted before inspecting signatures",
+            )),
+            _ => Ok(0),
+        }
+    }
+
+    /// Return metadata for each signature packet on a signed message.
+    ///
+    /// This reads the message to the end to finalize one-pass signature verification state,
+    /// mirroring the requirements of RFC 9580 one-pass signatures.
+    fn signature_infos(&self) -> PyResult<Vec<SignatureInfo>> {
+        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
+        signature_infos_from_signed_message(message)
+    }
+
+    /// Verify a specific signature on the message and return its metadata.
+    ///
+    /// The default index of ``0`` corresponds to the first signature reported by
+    /// :meth:`signature_infos`.
+    #[pyo3(signature = (key, index=0))]
+    fn verify_signature(&self, key: PyRef<'_, PublicKey>, index: usize) -> PyResult<SignatureInfo> {
+        let message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
+        verify_message_signature_info(message, &key.inner, index)
+    }
+
     /// Verify a signed message against a public key.
-    fn verify(&self, key: PyRef<'_, PublicKey>) -> PyResult<()> {
-        let mut message = prepare_message_for_content(&self.source).map_err(to_py_err)?;
-        message.verify_read(&key.inner).map_err(to_py_err)?;
+    ///
+    /// By default, this verifies the first signature on the message. Pass ``index`` to target a
+    /// later signature in a multi-signed message.
+    #[pyo3(signature = (key, index=0))]
+    fn verify(&self, key: PyRef<'_, PublicKey>, index: usize) -> PyResult<()> {
+        let _ = self.verify_signature(key, index)?;
         Ok(())
     }
 
@@ -591,6 +788,109 @@ impl DecryptedMessage {
     }
 }
 
+/// Metadata extracted from an OpenPGP data signature packet.
+///
+/// The fields mirror the RFC 9580 signature packet configuration, including issuer subpackets,
+/// the 16-bit signed hash prefix, and the version-6 salt when present.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+struct SignatureInfo {
+    version: u8,
+    signature_type: Option<String>,
+    hash_algorithm: Option<String>,
+    public_key_algorithm: Option<String>,
+    issuer_key_ids: Vec<String>,
+    issuer_fingerprints: Vec<String>,
+    creation_time: Option<u32>,
+    signature_expiration_seconds: Option<u32>,
+    signer_user_id: Option<String>,
+    signed_hash_value: Option<Vec<u8>>,
+    salt: Option<Vec<u8>>,
+    is_one_pass: bool,
+}
+
+#[pymethods]
+impl SignatureInfo {
+    /// The signature packet version number.
+    #[getter]
+    fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// The RFC 9580 signature type name, if this packet used a known signature format.
+    #[getter]
+    fn signature_type(&self) -> Option<String> {
+        self.signature_type.clone()
+    }
+
+    /// The declared hash algorithm name, if this packet used a known signature format.
+    #[getter]
+    fn hash_algorithm(&self) -> Option<String> {
+        self.hash_algorithm.clone()
+    }
+
+    /// The declared public-key algorithm name, if this packet used a known signature format.
+    #[getter]
+    fn public_key_algorithm(&self) -> Option<String> {
+        self.public_key_algorithm.clone()
+    }
+
+    /// Any issuer key IDs from issuer-related subpackets.
+    #[getter]
+    fn issuer_key_ids(&self) -> Vec<String> {
+        self.issuer_key_ids.clone()
+    }
+
+    /// Any issuer fingerprints from issuer fingerprint subpackets.
+    #[getter]
+    fn issuer_fingerprints(&self) -> Vec<String> {
+        self.issuer_fingerprints.clone()
+    }
+
+    /// The signature creation time as seconds since the Unix epoch, if present.
+    #[getter]
+    fn creation_time(&self) -> Option<u32> {
+        self.creation_time
+    }
+
+    /// The signature expiration interval in seconds, if present.
+    #[getter]
+    fn signature_expiration_seconds(&self) -> Option<u32> {
+        self.signature_expiration_seconds
+    }
+
+    /// The signer's declared user ID from hashed subpackets, lossily decoded as UTF-8.
+    #[getter]
+    fn signer_user_id(&self) -> Option<String> {
+        self.signer_user_id.clone()
+    }
+
+    /// The two-octet signed hash prefix stored in the signature packet, if available.
+    #[getter]
+    fn signed_hash_value(&self) -> Option<Vec<u8>> {
+        self.signed_hash_value.clone()
+    }
+
+    /// The RFC 9580 version-6 signature salt, if this is a version-6 signature.
+    #[getter]
+    fn salt(&self) -> Option<Vec<u8>> {
+        self.salt.clone()
+    }
+
+    /// Whether the signature originated from a one-pass signature packet.
+    #[getter]
+    fn is_one_pass(&self) -> bool {
+        self.is_one_pass
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SignatureInfo(version={}, signature_type={:?}, hash_algorithm={:?}, is_one_pass={})",
+            self.version, self.signature_type, self.hash_algorithm, self.is_one_pass
+        )
+    }
+}
+
 /// A detached OpenPGP signature packet sequence.
 #[pyclass(module = "openpgp")]
 #[derive(Clone)]
@@ -634,9 +934,20 @@ impl DetachedSignature {
         Ok(Self { inner })
     }
 
+    /// Return metadata for the detached signature packet.
+    fn signature_info(&self) -> SignatureInfo {
+        signature_info_from_signature(&self.inner.signature, false)
+    }
+
     /// Verify a detached signature against a public key and payload.
     fn verify(&self, key: PyRef<'_, PublicKey>, data: &[u8]) -> PyResult<()> {
         self.inner.verify(&key.inner, data).map_err(to_py_err)
+    }
+
+    /// Verify a detached signature and return its metadata.
+    fn verify_signature(&self, key: PyRef<'_, PublicKey>, data: &[u8]) -> PyResult<SignatureInfo> {
+        self.inner.verify(&key.inner, data).map_err(to_py_err)?;
+        Ok(self.signature_info())
     }
 
     /// Serialize the detached signature to binary packet bytes.
@@ -694,12 +1005,58 @@ impl CleartextSignedMessage {
         self.inner.signed_text()
     }
 
-    /// Verify at least one cleartext signature against the given public key.
-    fn verify(&self, key: PyRef<'_, PublicKey>) -> PyResult<()> {
+    /// Return the number of signatures attached to the cleartext framework.
+    fn signature_count(&self) -> usize {
+        self.inner.signatures().len()
+    }
+
+    /// Return metadata for every cleartext signature packet.
+    fn signature_infos(&self) -> Vec<SignatureInfo> {
         self.inner
-            .verify(&key.inner.primary_key)
-            .map(|_| ())
-            .map_err(to_py_err)
+            .signatures()
+            .iter()
+            .map(|signature| signature_info_from_signature(signature, false))
+            .collect()
+    }
+
+    /// Verify at least one cleartext signature against the given public key and return metadata.
+    ///
+    /// If ``index`` is provided, only that signature packet is verified.
+    #[pyo3(signature = (key, index=None))]
+    fn verify_signature(
+        &self,
+        key: PyRef<'_, PublicKey>,
+        index: Option<usize>,
+    ) -> PyResult<SignatureInfo> {
+        let signed_text = self.inner.signed_text();
+        let signatures = self.inner.signatures();
+
+        if let Some(index) = index {
+            let signature = signatures
+                .get(index)
+                .ok_or_else(|| to_py_err("signature index out of range"))?;
+            signature
+                .verify(&key.inner, signed_text.as_bytes())
+                .map_err(to_py_err)?;
+            return Ok(signature_info_from_signature(signature, false));
+        }
+
+        for signature in signatures {
+            if signature.verify(&key.inner, signed_text.as_bytes()).is_ok() {
+                return Ok(signature_info_from_signature(signature, false));
+            }
+        }
+
+        Err(to_py_err("no matching signature found"))
+    }
+
+    /// Verify at least one cleartext signature against the given public key.
+    ///
+    /// If ``index`` is provided, only that signature packet is verified.
+    #[pyo3(signature = (key, index=None))]
+    fn verify(&self, key: PyRef<'_, PublicKey>, index: Option<usize>) -> PyResult<()> {
+        let _ = self.verify_signature(key, index)?;
+        Ok(())
     }
 
     /// Serialize the cleartext signed message as ASCII armor.
@@ -932,6 +1289,7 @@ fn _openpgp(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<SecretKey>()?;
     module.add_class::<Message>()?;
     module.add_class::<DecryptedMessage>()?;
+    module.add_class::<SignatureInfo>()?;
     module.add_class::<DetachedSignature>()?;
     module.add_class::<CleartextSignedMessage>()?;
     module.add_class::<MessageInfo>()?;
