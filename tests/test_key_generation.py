@@ -14,6 +14,7 @@ from openpgp import (
     S2kParams,
     StringToKey,
     SubkeyParamsBuilder,
+    UserAttribute,
     encrypt_message_to_recipient,
     sign_message,
 )
@@ -44,6 +45,7 @@ DEFAULT_COMPRESSION_PREFERENCES: Final[list[CompressionPreferenceName]] = [
 AES256_ONLY: Final[list[SymmetricPreferenceName]] = ["aes256"]
 SHA512_ONLY: Final[list[HashPreferenceName]] = ["sha512"]
 ZLIB_ONLY: Final[list[CompressionPreferenceName]] = ["zlib"]
+JPEG_USER_ATTRIBUTE_DATA: Final[bytes] = bytes.fromhex("ffd8ffe000104a464946000101")
 
 
 def build_modern_signing_key(version: KeyVersion) -> SecretKeyParamsBuilder:
@@ -557,6 +559,72 @@ def test_v6_id_less_certificate_still_exposes_direct_key_signature_metadata() ->
         seipd_v1=False,
         seipd_v2=True,
     )
+
+
+def test_user_attribute_image_packets_roundtrip_from_builder() -> None:
+    """Adapt upstream `UserAttribute::new_image` behavior into builder coverage."""
+
+    portrait = UserAttribute.image_jpeg(JPEG_USER_ATTRIBUTE_DATA)
+
+    secret_key = (
+        build_modern_signing_key(4)
+        .user_attribute(portrait)
+        .build()
+        .generate()
+    )
+    public_key = secret_key.to_public_key()
+
+    secret_attributes = secret_key.user_attribute_bindings()
+    public_attributes = public_key.user_attribute_bindings()
+    assert len(secret_attributes) == 1
+    assert len(public_attributes) == 1
+
+    secret_attribute = secret_attributes[0]
+    public_attribute = public_attributes[0]
+    assert secret_attribute.user_attribute.kind == "image"
+    assert public_attribute.user_attribute.kind == "image"
+    assert secret_attribute.user_attribute.image_header_version == 1
+    assert public_attribute.user_attribute.image_header_version == 1
+    assert secret_attribute.user_attribute.image_format == "jpeg"
+    assert public_attribute.user_attribute.image_format == "jpeg"
+    assert secret_attribute.user_attribute.data == JPEG_USER_ATTRIBUTE_DATA
+    assert public_attribute.user_attribute.data == JPEG_USER_ATTRIBUTE_DATA
+    assert len(secret_attribute.signatures) == 1
+    assert len(public_attribute.signatures) == 1
+    assert secret_attribute.signatures[0].signature_type == "cert-positive"
+    assert public_attribute.signatures[0].signature_type == "cert-positive"
+
+    reparsed_secret, _ = SecretKey.from_armor(secret_key.to_armored())
+    reparsed_public, _ = PublicKey.from_armor(public_key.to_armored())
+    assert reparsed_secret.user_attribute_bindings()[0].user_attribute.data == JPEG_USER_ATTRIBUTE_DATA
+    assert reparsed_public.user_attribute_bindings()[0].user_attribute.data == JPEG_USER_ATTRIBUTE_DATA
+
+
+@pytest.mark.parametrize("version", [4, 6])
+def test_user_attribute_sequence_builder_preserves_order(version: KeyVersion) -> None:
+    """Adapt upstream builder list semantics for user-attribute sequences."""
+
+    first = UserAttribute.image_jpeg(bytes.fromhex("ffd8ffdb00"))
+    second = UserAttribute.image_jpeg(bytes.fromhex("ffd8ffee010203"))
+
+    secret_key = (
+        build_modern_signing_key(version)
+        .user_attributes([first, second])
+        .build()
+        .generate()
+    )
+
+    attributes = secret_key.user_attribute_bindings()
+    assert [binding.user_attribute.data for binding in attributes] == [
+        bytes.fromhex("ffd8ffdb00"),
+        bytes.fromhex("ffd8ffee010203"),
+    ]
+    for binding in attributes:
+        assert binding.user_attribute.kind == "image"
+        assert binding.user_attribute.image_format == "jpeg"
+        assert binding.user_attribute.image_header_version == 1
+        assert len(binding.signatures) == 1
+        assert binding.signatures[0].signature_type == "cert-positive"
 
 
 

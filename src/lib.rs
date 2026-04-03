@@ -16,8 +16,10 @@ use pgp::{
         sym::SymmetricKeyAlgorithm,
     },
     packet::{
-        DataMode, Features as PgpFeatures, KeyFlags as PgpKeyFlags, Signature, SignatureType,
-        SignatureVersion, SignatureVersionSpecific,
+        DataMode, Features as PgpFeatures, ImageHeader as PgpImageHeader,
+        ImageHeaderV1 as PgpImageHeaderV1, KeyFlags as PgpKeyFlags, Signature, SignatureType,
+        SignatureVersion, SignatureVersionSpecific, UserAttribute as PgpUserAttribute,
+        UserAttributeType as PgpUserAttributeType,
     },
     ser::Serialize,
     types::{
@@ -310,6 +312,53 @@ fn lossy_user_ids(details: &pgp::composed::SignedKeyDetails) -> Vec<String> {
         .collect()
 }
 
+fn user_attribute_kind_name(attribute: &PgpUserAttribute) -> &'static str {
+    match attribute.typ() {
+        PgpUserAttributeType::Image => "image",
+        PgpUserAttributeType::Unknown(_) => "unknown",
+    }
+}
+
+fn user_attribute_data(attribute: &PgpUserAttribute) -> Vec<u8> {
+    match attribute {
+        PgpUserAttribute::Image { data, .. } | PgpUserAttribute::Unknown { data, .. } => {
+            data.to_vec()
+        }
+    }
+}
+
+fn user_attribute_image_header_version(attribute: &PgpUserAttribute) -> Option<u8> {
+    match attribute {
+        PgpUserAttribute::Image {
+            header: PgpImageHeader::V1(_),
+            ..
+        } => Some(1),
+        PgpUserAttribute::Image {
+            header: PgpImageHeader::Unknown { version, .. },
+            ..
+        } => Some(*version),
+        PgpUserAttribute::Unknown { .. } => None,
+    }
+}
+
+fn user_attribute_image_format(attribute: &PgpUserAttribute) -> Option<String> {
+    match attribute {
+        PgpUserAttribute::Image {
+            header: PgpImageHeader::V1(PgpImageHeaderV1::Jpeg { .. }),
+            ..
+        } => Some("jpeg".to_string()),
+        PgpUserAttribute::Image {
+            header: PgpImageHeader::V1(PgpImageHeaderV1::Unknown { format, .. }),
+            ..
+        } => Some(format!("unknown({format:#x})")),
+        PgpUserAttribute::Image {
+            header: PgpImageHeader::Unknown { .. },
+            ..
+        }
+        | PgpUserAttribute::Unknown { .. } => None,
+    }
+}
+
 fn data_mode_name(mode: DataMode) -> String {
     match mode {
         DataMode::Binary => "binary",
@@ -566,6 +615,31 @@ fn user_binding_infos_from_details(
         .users
         .iter()
         .map(user_binding_info_from_signed_user)
+        .collect::<Vec<_>>()
+}
+
+fn user_attribute_binding_info_from_signed_user_attribute(
+    attribute: &pgp::types::SignedUserAttribute,
+) -> UserAttributeBindingInfo {
+    UserAttributeBindingInfo {
+        user_attribute: UserAttribute {
+            inner: attribute.attr.clone(),
+        },
+        signatures: attribute
+            .signatures
+            .iter()
+            .map(|signature| signature_info_from_signature(signature, false))
+            .collect::<Vec<_>>(),
+    }
+}
+
+fn user_attribute_binding_infos_from_details(
+    details: &pgp::composed::SignedKeyDetails,
+) -> Vec<UserAttributeBindingInfo> {
+    details
+        .user_attributes
+        .iter()
+        .map(user_attribute_binding_info_from_signed_user_attribute)
         .collect::<Vec<_>>()
 }
 
@@ -1178,6 +1252,7 @@ impl SecretKeyParams {
 #[derive(Clone)]
 struct SecretKeyParamsBuilder {
     inner: PgpSecretKeyParamsBuilder,
+    user_attributes: Vec<PgpUserAttribute>,
 }
 
 #[pymethods]
@@ -1186,6 +1261,7 @@ impl SecretKeyParamsBuilder {
     fn new() -> Self {
         Self {
             inner: PgpSecretKeyParamsBuilder::default(),
+            user_attributes: Vec::new(),
         }
     }
 
@@ -1305,6 +1381,24 @@ impl SecretKeyParamsBuilder {
         slf
     }
 
+    /// Add a single RFC 9580 user attribute that will be self-certified on the certificate.
+    fn user_attribute<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        value: PyRef<'_, UserAttribute>,
+    ) -> PyRefMut<'py, Self> {
+        slf.user_attributes.push(value.inner.clone());
+        slf
+    }
+
+    /// Replace the builder's user-attribute list with the provided sequence.
+    fn user_attributes<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        values: Vec<PyRef<'_, UserAttribute>>,
+    ) -> PyRefMut<'py, Self> {
+        slf.user_attributes = values.into_iter().map(|value| value.inner.clone()).collect();
+        slf
+    }
+
     fn subkey<'py>(
         mut slf: PyRefMut<'py, Self>,
         value: PyRef<'_, SubkeyParams>,
@@ -1314,7 +1408,9 @@ impl SecretKeyParamsBuilder {
     }
 
     fn build(&self) -> PyResult<SecretKeyParams> {
-        let inner = self.inner.build().map_err(to_py_err)?;
+        let mut inner_builder = self.inner.clone();
+        inner_builder.user_attributes(self.user_attributes.clone());
+        let inner = inner_builder.build().map_err(to_py_err)?;
         Ok(SecretKeyParams {
             inner: Mutex::new(Some(inner)),
         })
@@ -1390,6 +1486,11 @@ impl PublicKey {
     /// algorithms on the primary user-ID binding signature.
     fn user_bindings(&self) -> Vec<UserBindingInfo> {
         user_binding_infos_from_details(&self.inner.details)
+    }
+
+    /// Return user attributes together with their certification self-signatures.
+    fn user_attribute_bindings(&self) -> Vec<UserAttributeBindingInfo> {
+        user_attribute_binding_infos_from_details(&self.inner.details)
     }
 
     /// Verify the certificate's self-signatures and subkey binding signatures.
@@ -1493,6 +1594,11 @@ impl SecretKey {
     /// algorithms on the primary user-ID binding signature.
     fn user_bindings(&self) -> Vec<UserBindingInfo> {
         user_binding_infos_from_details(&self.inner.details)
+    }
+
+    /// Return user attributes together with their certification self-signatures.
+    fn user_attribute_bindings(&self) -> Vec<UserAttributeBindingInfo> {
+        user_attribute_binding_infos_from_details(&self.inner.details)
     }
 
     /// Return the primary secret key packet's RFC 9580 S2K protection parameters.
@@ -2045,6 +2151,85 @@ impl KeyFlagsInfo {
             self.encrypt_communications,
             self.encrypt_storage,
             self.authenticate,
+        )
+    }
+}
+
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+struct UserAttribute {
+    inner: PgpUserAttribute,
+}
+
+#[pymethods]
+impl UserAttribute {
+    /// Create an RFC 9580 image user attribute with the standard JPEG header framing.
+    #[staticmethod]
+    fn image_jpeg(data: &[u8]) -> PyResult<Self> {
+        let inner = PgpUserAttribute::new_image(data.to_vec().into()).map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    /// The normalized RFC 9580 user-attribute type name.
+    #[getter]
+    fn kind(&self) -> String {
+        user_attribute_kind_name(&self.inner).to_string()
+    }
+
+    /// The raw user-attribute payload bytes.
+    #[getter]
+    fn data(&self) -> Vec<u8> {
+        user_attribute_data(&self.inner)
+    }
+
+    /// The image-header version for image attributes, if present.
+    #[getter]
+    fn image_header_version(&self) -> Option<u8> {
+        user_attribute_image_header_version(&self.inner)
+    }
+
+    /// The normalized image format for image attributes, if present.
+    #[getter]
+    fn image_format(&self) -> Option<String> {
+        user_attribute_image_format(&self.inner)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "UserAttribute(kind='{}', data_len={})",
+            self.kind(),
+            self.data().len()
+        )
+    }
+}
+
+/// A signed user attribute and its attached certification self-signatures.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+struct UserAttributeBindingInfo {
+    user_attribute: UserAttribute,
+    signatures: Vec<SignatureInfo>,
+}
+
+#[pymethods]
+impl UserAttributeBindingInfo {
+    /// The underlying user-attribute packet metadata.
+    #[getter]
+    fn user_attribute(&self) -> UserAttribute {
+        self.user_attribute.clone()
+    }
+
+    /// Metadata for every certification signature attached to this user attribute.
+    #[getter]
+    fn signatures(&self) -> Vec<SignatureInfo> {
+        self.signatures.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "UserAttributeBindingInfo(kind='{}', signature_count={})",
+            self.user_attribute.kind(),
+            self.signatures.len()
         )
     }
 }
@@ -2671,6 +2856,8 @@ fn _openpgp(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Message>()?;
     module.add_class::<DecryptedMessage>()?;
     module.add_class::<KeyFlagsInfo>()?;
+    module.add_class::<UserAttribute>()?;
+    module.add_class::<UserAttributeBindingInfo>()?;
     module.add_class::<FeaturesInfo>()?;
     module.add_class::<UserBindingInfo>()?;
     module.add_class::<SignatureInfo>()?;
