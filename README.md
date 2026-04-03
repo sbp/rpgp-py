@@ -109,6 +109,9 @@ secret_key = (
 public_key = secret_key.to_public_key()
 secret_key.verify_bindings()
 public_key.verify_bindings()
+assert secret_key.packet_version == PacketHeaderVersion.new()
+assert public_key.packet_version == PacketHeaderVersion.new()
+assert public_key.packet_version.name == "new"
 
 direct_self_signature = public_key.direct_signature_infos()[0]
 assert direct_self_signature.signature_type == "direct-key"
@@ -130,6 +133,8 @@ assert portrait_binding.user_attribute.data == bytes.fromhex("ffd8ffe000104a4649
 assert portrait_binding.signatures[0].signature_type == "cert-positive"
 
 subkey_binding = public_key.subkey_bindings()[0]
+assert subkey_binding.packet_version == PacketHeaderVersion.new()
+assert subkey_binding.packet_version.name == "new"
 assert subkey_binding.signatures[0].signature_type == "subkey-binding"
 assert subkey_binding.signatures[0].embedded_signature is None
 
@@ -145,6 +150,8 @@ assert encrypted_message.decrypt(secret_key).payload_bytes() == b"secret"
 
 Use `PacketHeaderVersion.old()` when you need legacy packet-header framing for the serialized
 primary-key or subkey packets, for example when round-tripping older transferable key material.
+Generated keys and `subkey_bindings()` expose the selected framing again via `packet_version`, and
+`PacketHeaderVersion` values compare by value while also exposing `.name` for lightweight checks.
 
 For signing-capable subkeys, `subkey_bindings()[0].signatures[0].embedded_signature` exposes the
 embedded primary-key-binding signature that RFC 9580 requires for back-signing.

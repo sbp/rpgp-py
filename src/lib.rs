@@ -31,6 +31,7 @@ use pgp::{
     },
 };
 use pyo3::{
+    basic::CompareOp,
     exceptions::PyValueError,
     prelude::*,
     types::{PyModule, PyModuleMethods},
@@ -412,6 +413,13 @@ fn aead_algorithm_preference_names(
         .collect::<Vec<_>>()
 }
 
+fn packet_header_version_name(version: PgpPacketHeaderVersion) -> &'static str {
+    match version {
+        PgpPacketHeaderVersion::Old => "old",
+        PgpPacketHeaderVersion::New => "new",
+    }
+}
+
 fn string_to_key_kind_name(value: &PgpStringToKey) -> &'static str {
     match value {
         PgpStringToKey::Simple { .. } => "simple",
@@ -738,6 +746,7 @@ fn subkey_binding_info_from_signed_public_subkey(subkey: &SignedPublicSubKey) ->
     SubkeyBindingInfo {
         fingerprint: subkey.key.fingerprint().to_string(),
         key_id: subkey.key.legacy_key_id().to_string(),
+        packet_version: subkey.key.packet_header_version(),
         signatures: subkey
             .signatures
             .iter()
@@ -750,6 +759,7 @@ fn subkey_binding_info_from_signed_secret_subkey(subkey: &SignedSecretSubKey) ->
     SubkeyBindingInfo {
         fingerprint: subkey.key.public_key().fingerprint().to_string(),
         key_id: subkey.key.public_key().legacy_key_id().to_string(),
+        packet_version: subkey.key.packet_header_version(),
         signatures: subkey
             .signatures
             .iter()
@@ -854,7 +864,7 @@ macro_rules! encrypt_to_recipient {
 /// format. rPGP exposes this via `types::PacketHeaderVersion`; the key builders use the selected
 /// value when serializing primary-key and subkey packets.
 #[pyclass(module = "openpgp", name = "PacketHeaderVersion")]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct PyPacketHeaderVersion {
     inner: PgpPacketHeaderVersion,
 }
@@ -876,12 +886,22 @@ impl PyPacketHeaderVersion {
         }
     }
 
+    /// Return the normalized RFC 9580 packet-header variant name.
+    #[getter]
+    fn name(&self) -> &'static str {
+        packet_header_version_name(self.inner)
+    }
+
+    fn __richcmp__(&self, other: PyRef<'_, Self>, op: CompareOp) -> bool {
+        match op {
+            CompareOp::Eq => self.inner == other.inner,
+            CompareOp::Ne => self.inner != other.inner,
+            _ => false,
+        }
+    }
+
     fn __repr__(&self) -> String {
-        let name = match self.inner {
-            PgpPacketHeaderVersion::Old => "old",
-            PgpPacketHeaderVersion::New => "new",
-        };
-        format!("PacketHeaderVersion.{name}()")
+        format!("PacketHeaderVersion.{}()", self.name())
     }
 }
 
@@ -1652,6 +1672,14 @@ impl PublicKey {
         self.inner.legacy_key_id().to_string()
     }
 
+    /// The RFC 9580 packet-header framing used by the primary key packet.
+    #[getter]
+    fn packet_version(&self) -> PyPacketHeaderVersion {
+        PyPacketHeaderVersion {
+            inner: self.inner.primary_key.packet_header_version(),
+        }
+    }
+
     /// The number of public subkeys attached to the certificate.
     #[getter]
     fn public_subkey_count(&self) -> usize {
@@ -1761,6 +1789,14 @@ impl SecretKey {
             .public_key()
             .legacy_key_id()
             .to_string()
+    }
+
+    /// The RFC 9580 packet-header framing used by the primary secret-key packet.
+    #[getter]
+    fn packet_version(&self) -> PyPacketHeaderVersion {
+        PyPacketHeaderVersion {
+            inner: self.inner.primary_key.packet_header_version(),
+        }
     }
 
     /// The number of public subkeys attached to the secret key.
@@ -2480,6 +2516,7 @@ impl FeaturesInfo {
 struct SubkeyBindingInfo {
     fingerprint: String,
     key_id: String,
+    packet_version: PgpPacketHeaderVersion,
     signatures: Vec<SignatureInfo>,
 }
 
@@ -2497,6 +2534,14 @@ impl SubkeyBindingInfo {
         self.key_id.clone()
     }
 
+    /// The RFC 9580 packet-header framing used by this subkey packet.
+    #[getter]
+    fn packet_version(&self) -> PyPacketHeaderVersion {
+        PyPacketHeaderVersion {
+            inner: self.packet_version,
+        }
+    }
+
     /// Metadata for every binding or revocation signature attached to this subkey.
     #[getter]
     fn signatures(&self) -> Vec<SignatureInfo> {
@@ -2505,9 +2550,10 @@ impl SubkeyBindingInfo {
 
     fn __repr__(&self) -> String {
         format!(
-            "SubkeyBindingInfo(fingerprint='{}', key_id='{}', signature_count={})",
+            "SubkeyBindingInfo(fingerprint='{}', key_id='{}', packet_version='{}', signature_count={})",
             self.fingerprint,
             self.key_id,
+            packet_header_version_name(self.packet_version),
             self.signatures.len()
         )
     }

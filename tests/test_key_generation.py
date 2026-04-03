@@ -1051,3 +1051,83 @@ def test_packet_version_roundtrips_through_secret_and_public_serialization(
         expected_version,
         expected_version,
     ]
+
+
+def test_packet_header_version_instances_compare_by_value() -> None:
+    """PacketHeaderVersion values should support typed inspection and equality checks."""
+
+    assert PacketHeaderVersion.old().name == "old"
+    assert PacketHeaderVersion.new().name == "new"
+    assert PacketHeaderVersion.old() == PacketHeaderVersion.old()
+    assert PacketHeaderVersion.new() == PacketHeaderVersion.new()
+    assert PacketHeaderVersion.old() != PacketHeaderVersion.new()
+
+
+@pytest.mark.parametrize(
+    (
+        "expected_primary_version",
+        "expected_subkey_version",
+        "primary_packet_version",
+        "subkey_packet_version",
+    ),
+    [
+        ("old", "new", PacketHeaderVersion.old(), PacketHeaderVersion.new()),
+        ("new", "old", PacketHeaderVersion.new(), PacketHeaderVersion.old()),
+    ],
+)
+def test_packet_version_is_exposed_on_keys_and_subkey_bindings(
+    expected_primary_version: Literal["old", "new"],
+    expected_subkey_version: Literal["old", "new"],
+    primary_packet_version: PacketHeaderVersion,
+    subkey_packet_version: PacketHeaderVersion,
+) -> None:
+    """Packet framing should be inspectable directly on generated keys and subkeys."""
+
+    secret_key = (
+        build_modern_signing_key(6)
+        .packet_version(primary_packet_version)
+        .subkey(
+            SubkeyParamsBuilder()
+            .version(6)
+            .key_type(KeyType.x25519())
+            .packet_version(subkey_packet_version)
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+        .build()
+        .generate()
+    )
+    public_key = secret_key.to_public_key()
+
+    assert secret_key.packet_version == primary_packet_version
+    assert public_key.packet_version == primary_packet_version
+    assert secret_key.packet_version.name == expected_primary_version
+    assert public_key.packet_version.name == expected_primary_version
+    assert secret_key.subkey_bindings()[0].packet_version == subkey_packet_version
+    assert public_key.subkey_bindings()[0].packet_version == subkey_packet_version
+    assert secret_key.subkey_bindings()[0].packet_version.name == expected_subkey_version
+    assert public_key.subkey_bindings()[0].packet_version.name == expected_subkey_version
+
+    reparsed_secret = SecretKey.from_bytes(secret_key.to_bytes())
+    reparsed_public = PublicKey.from_bytes(public_key.to_bytes())
+    assert reparsed_secret.packet_version == primary_packet_version
+    assert reparsed_public.packet_version == primary_packet_version
+    assert reparsed_secret.subkey_bindings()[0].packet_version == subkey_packet_version
+    assert reparsed_public.subkey_bindings()[0].packet_version == subkey_packet_version
+
+    assert [
+        header.version
+        for header in parse_packet_headers(secret_key.to_bytes())
+        if header.tag in {SECRET_KEY_TAG, SECRET_SUBKEY_TAG}
+    ] == [
+        expected_primary_version,
+        expected_subkey_version,
+    ]
+    assert [
+        header.version
+        for header in parse_packet_headers(public_key.to_bytes())
+        if header.tag in {PUBLIC_KEY_TAG, PUBLIC_SUBKEY_TAG}
+    ] == [
+        expected_primary_version,
+        expected_subkey_version,
+    ]
