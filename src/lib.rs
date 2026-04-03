@@ -20,13 +20,17 @@ use pgp::{
         SignatureVersion, SignatureVersionSpecific,
     },
     ser::Serialize,
-    types::{CompressionAlgorithm, KeyDetails, KeyVersion, Password, StringToKey, Timestamp},
+    types::{
+        CompressionAlgorithm, KeyDetails, KeyVersion, Password, S2kParams as PgpS2kParams,
+        SecretParams as PgpSecretParams, StringToKey as PgpStringToKey, Timestamp,
+    },
 };
 use pyo3::{
     exceptions::PyValueError,
     prelude::*,
     types::{PyModule, PyModuleMethods},
 };
+use rand::Rng;
 use smallvec::SmallVec;
 
 type Headers = BTreeMap<String, Vec<String>>;
@@ -354,6 +358,70 @@ fn aead_algorithm_preference_names(
             )
         })
         .collect::<Vec<_>>()
+}
+
+fn string_to_key_kind_name(value: &PgpStringToKey) -> &'static str {
+    match value {
+        PgpStringToKey::Simple { .. } => "simple",
+        PgpStringToKey::Salted { .. } => "salted",
+        PgpStringToKey::Reserved { .. } => "reserved",
+        PgpStringToKey::IteratedAndSalted { .. } => "iterated-salted",
+        PgpStringToKey::Argon2 { .. } => "argon2",
+        PgpStringToKey::Private { .. } => "private",
+        PgpStringToKey::Other { .. } => "other",
+    }
+}
+
+fn s2k_usage_name(value: &PgpS2kParams) -> &'static str {
+    match value {
+        PgpS2kParams::Unprotected => "unprotected",
+        PgpS2kParams::LegacyCfb { .. } => "legacy-cfb",
+        PgpS2kParams::Aead { .. } => "aead",
+        PgpS2kParams::Cfb { .. } => "cfb",
+        PgpS2kParams::MalleableCfb { .. } => "malleable-cfb",
+    }
+}
+
+fn exact_or_random_array<const N: usize>(
+    value: Option<&[u8]>,
+    field_name: &str,
+) -> PyResult<[u8; N]> {
+    match value {
+        Some(value) => value
+            .try_into()
+            .map_err(|_| to_py_err(format!("{field_name} must be exactly {N} bytes"))),
+        None => {
+            let mut generated = [0u8; N];
+            rand::thread_rng().fill(&mut generated[..]);
+            Ok(generated)
+        }
+    }
+}
+
+fn exact_or_random_vec(
+    value: Option<&[u8]>,
+    expected_len: usize,
+    field_name: &str,
+) -> PyResult<Vec<u8>> {
+    match value {
+        Some(value) if value.len() == expected_len => Ok(value.to_vec()),
+        Some(_) => Err(to_py_err(format!(
+            "{field_name} must be exactly {expected_len} bytes"
+        ))),
+        None => {
+            let mut generated = vec![0u8; expected_len];
+            rand::thread_rng().fill(generated.as_mut_slice());
+            Ok(generated)
+        }
+    }
+}
+
+fn s2k_params_from_secret_params(secret_params: &PgpSecretParams) -> PyS2kParams {
+    let inner = match secret_params {
+        PgpSecretParams::Plain(_) => PgpS2kParams::Unprotected,
+        PgpSecretParams::Encrypted(params) => params.string_to_key_params().clone(),
+    };
+    PyS2kParams { inner }
 }
 
 fn signature_version_number(version: SignatureVersion) -> u8 {
@@ -727,6 +795,265 @@ impl KeyType {
     }
 }
 
+/// A parsed or constructed RFC 9580 String-to-Key (S2K) specifier.
+#[pyclass(module = "openpgp", name = "StringToKey")]
+#[derive(Clone)]
+struct PyStringToKey {
+    inner: PgpStringToKey,
+}
+
+#[pymethods]
+impl PyStringToKey {
+    /// Create an iterated-and-salted S2K specifier (type 3).
+    ///
+    /// ``count`` is the encoded iteration-count octet from RFC 9580 section 3.7.1.3.
+    #[staticmethod]
+    #[pyo3(signature = (hash_algorithm, count, salt=None))]
+    fn iterated(hash_algorithm: &str, count: u8, salt: Option<&[u8]>) -> PyResult<Self> {
+        Ok(Self {
+            inner: PgpStringToKey::IteratedAndSalted {
+                hash_alg: hash_algorithm_from_name(hash_algorithm)?,
+                salt: exact_or_random_array::<8>(salt, "salt")?,
+                count,
+            },
+        })
+    }
+
+    /// Create an Argon2 S2K specifier (type 4).
+    ///
+    /// The parameters correspond to RFC 9580 section 3.7.1.4 and RFC 9106 section 4.5.
+    #[staticmethod]
+    #[pyo3(signature = (passes, parallelism, memory_exponent, salt=None))]
+    fn argon2(
+        passes: u8,
+        parallelism: u8,
+        memory_exponent: u8,
+        salt: Option<&[u8]>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: PgpStringToKey::Argon2 {
+                salt: exact_or_random_array::<16>(salt, "salt")?,
+                t: passes,
+                p: parallelism,
+                m_enc: memory_exponent,
+            },
+        })
+    }
+
+    /// Return the numeric S2K type identifier from RFC 9580 section 3.7.1.
+    #[getter]
+    fn type_id(&self) -> u8 {
+        self.inner.id()
+    }
+
+    /// Return a normalized name for the wrapped S2K variant.
+    #[getter]
+    fn kind(&self) -> String {
+        string_to_key_kind_name(&self.inner).to_string()
+    }
+
+    /// Return the hash algorithm name for hash-based S2K variants, if present.
+    #[getter]
+    fn hash_algorithm(&self) -> Option<String> {
+        match &self.inner {
+            PgpStringToKey::Simple { hash_alg }
+            | PgpStringToKey::Salted { hash_alg, .. }
+            | PgpStringToKey::IteratedAndSalted { hash_alg, .. } => {
+                Some(normalized_algorithm_name(hash_alg))
+            }
+            _ => None,
+        }
+    }
+
+    /// Return the salt bytes for salted S2K variants, if present.
+    #[getter]
+    fn salt(&self) -> Option<Vec<u8>> {
+        match &self.inner {
+            PgpStringToKey::Salted { salt, .. }
+            | PgpStringToKey::IteratedAndSalted { salt, .. } => Some(salt.to_vec()),
+            PgpStringToKey::Argon2 { salt, .. } => Some(salt.to_vec()),
+            _ => None,
+        }
+    }
+
+    /// Return the encoded iteration-count octet for iterated-and-salted S2K variants.
+    #[getter]
+    fn count(&self) -> Option<u8> {
+        match &self.inner {
+            PgpStringToKey::IteratedAndSalted { count, .. } => Some(*count),
+            _ => None,
+        }
+    }
+
+    /// Return the Argon2 pass count ``t``, if present.
+    #[getter]
+    fn passes(&self) -> Option<u8> {
+        match &self.inner {
+            PgpStringToKey::Argon2 { t, .. } => Some(*t),
+            _ => None,
+        }
+    }
+
+    /// Return the Argon2 degree of parallelism ``p``, if present.
+    #[getter]
+    fn parallelism(&self) -> Option<u8> {
+        match &self.inner {
+            PgpStringToKey::Argon2 { p, .. } => Some(*p),
+            _ => None,
+        }
+    }
+
+    /// Return the Argon2 encoded memory exponent ``m`` , if present.
+    #[getter]
+    fn memory_exponent(&self) -> Option<u8> {
+        match &self.inner {
+            PgpStringToKey::Argon2 { m_enc, .. } => Some(*m_enc),
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StringToKey(kind='{}', type_id={})",
+            self.kind(),
+            self.type_id()
+        )
+    }
+}
+
+/// Parsed or constructed secret-key protection parameters (RFC 9580 section 3.7.2).
+#[pyclass(module = "openpgp", name = "S2kParams")]
+#[derive(Clone)]
+struct PyS2kParams {
+    inner: PgpS2kParams,
+}
+
+#[pymethods]
+impl PyS2kParams {
+    /// Create CFB-based secret-key protection parameters (usage 254).
+    ///
+    /// RFC 9580 forbids combining Argon2 S2K with non-AEAD usage modes.
+    #[staticmethod]
+    #[pyo3(signature = (symmetric_algorithm, string_to_key, iv=None))]
+    fn cfb(
+        symmetric_algorithm: &str,
+        string_to_key: PyRef<'_, PyStringToKey>,
+        iv: Option<&[u8]>,
+    ) -> PyResult<Self> {
+        if matches!(&string_to_key.inner, PgpStringToKey::Argon2 { .. }) {
+            return Err(to_py_err(
+                "Argon2 String-to-Key may only be used with AEAD S2K parameters",
+            ));
+        }
+
+        let sym_alg = symmetric_algorithm_from_name(symmetric_algorithm)?;
+        let iv = exact_or_random_vec(iv, sym_alg.block_size(), "iv")?;
+        Ok(Self {
+            inner: PgpS2kParams::Cfb {
+                sym_alg,
+                s2k: string_to_key.inner.clone(),
+                iv: iv.into(),
+            },
+        })
+    }
+
+    /// Create AEAD-based secret-key protection parameters (usage 253).
+    #[staticmethod]
+    #[pyo3(signature = (symmetric_algorithm, aead_algorithm, string_to_key, nonce=None))]
+    fn aead(
+        symmetric_algorithm: &str,
+        aead_algorithm: &str,
+        string_to_key: PyRef<'_, PyStringToKey>,
+        nonce: Option<&[u8]>,
+    ) -> PyResult<Self> {
+        let sym_alg = symmetric_algorithm_from_name(symmetric_algorithm)?;
+        let aead_mode = aead_algorithm_from_name(aead_algorithm)?;
+        let nonce = exact_or_random_vec(nonce, aead_mode.nonce_size(), "nonce")?;
+        Ok(Self {
+            inner: PgpS2kParams::Aead {
+                sym_alg,
+                aead_mode,
+                s2k: string_to_key.inner.clone(),
+                nonce: nonce.into(),
+            },
+        })
+    }
+
+    /// Return the numeric S2K-usage octet from RFC 9580 section 3.7.2.
+    #[getter]
+    fn usage_id(&self) -> u8 {
+        (&self.inner).into()
+    }
+
+    /// Return a normalized name for the wrapped S2K usage mode.
+    #[getter]
+    fn usage(&self) -> String {
+        s2k_usage_name(&self.inner).to_string()
+    }
+
+    /// Return the symmetric algorithm used to encrypt the secret material, if present.
+    #[getter]
+    fn symmetric_algorithm(&self) -> Option<String> {
+        match &self.inner {
+            PgpS2kParams::Unprotected => None,
+            PgpS2kParams::LegacyCfb { sym_alg, .. }
+            | PgpS2kParams::Aead { sym_alg, .. }
+            | PgpS2kParams::Cfb { sym_alg, .. }
+            | PgpS2kParams::MalleableCfb { sym_alg, .. } => {
+                Some(normalized_algorithm_name(sym_alg))
+            }
+        }
+    }
+
+    /// Return the AEAD algorithm name for AEAD-protected secret material, if present.
+    #[getter]
+    fn aead_algorithm(&self) -> Option<String> {
+        match &self.inner {
+            PgpS2kParams::Aead { aead_mode, .. } => Some(normalized_algorithm_name(aead_mode)),
+            _ => None,
+        }
+    }
+
+    /// Return the wrapped String-to-Key specifier, if this usage mode carries one.
+    #[getter]
+    fn string_to_key(&self) -> Option<PyStringToKey> {
+        match &self.inner {
+            PgpS2kParams::Aead { s2k, .. }
+            | PgpS2kParams::Cfb { s2k, .. }
+            | PgpS2kParams::MalleableCfb { s2k, .. } => Some(PyStringToKey { inner: s2k.clone() }),
+            _ => None,
+        }
+    }
+
+    /// Return the initialization vector for CFB-based modes, if present.
+    #[getter]
+    fn iv(&self) -> Option<Vec<u8>> {
+        match &self.inner {
+            PgpS2kParams::LegacyCfb { iv, .. }
+            | PgpS2kParams::Cfb { iv, .. }
+            | PgpS2kParams::MalleableCfb { iv, .. } => Some(iv.to_vec()),
+            _ => None,
+        }
+    }
+
+    /// Return the AEAD nonce, if present.
+    #[getter]
+    fn nonce(&self) -> Option<Vec<u8>> {
+        match &self.inner {
+            PgpS2kParams::Aead { nonce, .. } => Some(nonce.to_vec()),
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "S2kParams(usage='{}', usage_id={})",
+            self.usage(),
+            self.usage_id()
+        )
+    }
+}
+
 /// Built subkey-generation parameters.
 #[pyclass(module = "openpgp")]
 #[derive(Clone)]
@@ -795,6 +1122,15 @@ impl SubkeyParamsBuilder {
 
     fn passphrase<'py>(mut slf: PyRefMut<'py, Self>, value: Option<&str>) -> PyRefMut<'py, Self> {
         slf.inner.passphrase(value.map(str::to_owned));
+        slf
+    }
+
+    /// Override the secret-key protection parameters for this subkey.
+    fn s2k<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        value: PyRef<'_, PyS2kParams>,
+    ) -> PyRefMut<'py, Self> {
+        slf.inner.s2k(Some(value.inner.clone()));
         slf
     }
 
@@ -942,6 +1278,15 @@ impl SecretKeyParamsBuilder {
 
     fn passphrase<'py>(mut slf: PyRefMut<'py, Self>, value: Option<&str>) -> PyRefMut<'py, Self> {
         slf.inner.passphrase(value.map(str::to_owned));
+        slf
+    }
+
+    /// Override the secret-key protection parameters for the primary key packet.
+    fn s2k<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        value: PyRef<'_, PyS2kParams>,
+    ) -> PyRefMut<'py, Self> {
+        slf.inner.s2k(Some(value.inner.clone()));
         slf
     }
 
@@ -1148,6 +1493,22 @@ impl SecretKey {
     /// algorithms on the primary user-ID binding signature.
     fn user_bindings(&self) -> Vec<UserBindingInfo> {
         user_binding_infos_from_details(&self.inner.details)
+    }
+
+    /// Return the primary secret key packet's RFC 9580 S2K protection parameters.
+    ///
+    /// Unprotected keys return an ``S2kParams`` instance with usage ``"unprotected"``.
+    fn primary_secret_s2k(&self) -> PyS2kParams {
+        s2k_params_from_secret_params(self.inner.primary_key.secret_params())
+    }
+
+    /// Return RFC 9580 S2K protection parameters for each secret subkey packet.
+    fn secret_subkey_s2ks(&self) -> Vec<PyS2kParams> {
+        self.inner
+            .secret_subkeys
+            .iter()
+            .map(|subkey| s2k_params_from_secret_params(subkey.key.secret_params()))
+            .collect()
     }
 
     /// Verify the secret key's self-signatures and subkey binding signatures.
@@ -2263,7 +2624,7 @@ fn encrypt_message_with_password(
                 builder.compression(compression);
             }
             builder
-                .encrypt_with_password(StringToKey::new_default(rand::thread_rng()), &password)
+                .encrypt_with_password(PgpStringToKey::new_default(rand::thread_rng()), &password)
                 .map_err(to_py_err)?;
             builder
                 .to_armored_string(rand::thread_rng(), ArmorOptions::default())
@@ -2284,7 +2645,7 @@ fn encrypt_message_with_password(
             builder
                 .encrypt_with_password(
                     rand::thread_rng(),
-                    StringToKey::new_default(rand::thread_rng()),
+                    PgpStringToKey::new_default(rand::thread_rng()),
                     &password,
                 )
                 .map_err(to_py_err)?;
@@ -2299,6 +2660,8 @@ fn encrypt_message_with_password(
 fn _openpgp(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<EncryptionCaps>()?;
     module.add_class::<KeyType>()?;
+    module.add_class::<PyStringToKey>()?;
+    module.add_class::<PyS2kParams>()?;
     module.add_class::<SubkeyParams>()?;
     module.add_class::<SubkeyParamsBuilder>()?;
     module.add_class::<SecretKeyParams>()?;

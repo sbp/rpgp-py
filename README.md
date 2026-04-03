@@ -128,15 +128,72 @@ encrypted_message, _ = Message.from_armor(encrypted)
 assert encrypted_message.decrypt(secret_key).payload_bytes() == b"secret"
 ```
 
+### Customize secret-key S2K protection for generated keys
+
+```python
+from openpgp import (
+    EncryptionCaps,
+    KeyType,
+    S2kParams,
+    SecretKeyParamsBuilder,
+    StringToKey,
+    SubkeyParamsBuilder,
+)
+
+secret_key = (
+    SecretKeyParamsBuilder()
+    .version(6)
+    .key_type(KeyType.ed25519())
+    .can_certify(True)
+    .can_sign(True)
+    .primary_user_id("Me <me@example.com>")
+    .passphrase("hunter2")
+    .s2k(
+        S2kParams.aead(
+            "aes256",
+            "ocb",
+            StringToKey.argon2(3, 4, 16),
+        )
+    )
+    .subkey(
+        SubkeyParamsBuilder()
+        .version(6)
+        .key_type(KeyType.x25519())
+        .can_encrypt(EncryptionCaps.all())
+        .passphrase("hunter2")
+        .s2k(
+            S2kParams.cfb(
+                "aes128",
+                StringToKey.iterated("sha256", 96),
+            )
+        )
+        .build()
+    )
+    .build()
+    .generate()
+)
+
+primary_s2k = secret_key.primary_secret_s2k()
+assert primary_s2k.usage == "aead"
+assert primary_s2k.aead_algorithm == "ocb"
+assert primary_s2k.string_to_key is not None
+assert primary_s2k.string_to_key.kind == "argon2"
+
+subkey_s2k = secret_key.secret_subkey_s2ks()[0]
+assert subkey_s2k.usage == "cfb"
+assert subkey_s2k.string_to_key is not None
+assert subkey_s2k.string_to_key.kind == "iterated-salted"
+```
+
 ## Current binding surface
 
 - Parse ASCII-armored or binary transferable public keys.
 - Parse ASCII-armored or binary transferable secret keys.
-- Expose key metadata such as fingerprints, key IDs, subkey counts, and user IDs.
+- Expose key metadata such as fingerprints, key IDs, subkey counts, user IDs, and secret-key S2K protection settings.
 - Inspect certificate self-signature metadata, including direct-key signatures, user-ID binding signatures, key flags, features, and preferred algorithm lists.
 - Serialize keys back to binary packets or ASCII armor.
 - Generate new transferable secret/public keys with typed builder APIs based on rPGP's `SecretKeyParamsBuilder` and `SubkeyParamsBuilder`.
-- Configure key-generation parameters such as key versions, key flags, user IDs, preferred algorithms, SEIPD feature flags, passphrase protection, and subkeys.
+- Configure key-generation parameters such as key versions, key flags, user IDs, preferred algorithms, SEIPD feature flags, passphrase protection, explicit S2K protection parameters, and subkeys.
 - Parse OpenPGP messages into reusable Python `Message` objects.
 - Inspect top-level message metadata and read signed, literal, or compressed payloads.
 - Decrypt encrypted messages to `DecryptedMessage` results using a secret key or password.

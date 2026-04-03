@@ -11,6 +11,8 @@ from openpgp import (
     SecretKey,
     SecretKeyParamsBuilder,
     SignatureInfo,
+    S2kParams,
+    StringToKey,
     SubkeyParamsBuilder,
     encrypt_message_to_recipient,
     sign_message,
@@ -555,3 +557,194 @@ def test_v6_id_less_certificate_still_exposes_direct_key_signature_metadata() ->
         seipd_v1=False,
         seipd_v2=True,
     )
+
+
+
+def test_s2k_params_reject_argon2_with_cfb_usage() -> None:
+    """RFC 9580 forbids Argon2 S2K outside AEAD usage modes."""
+
+    with pytest.raises(
+        ValueError,
+        match="Argon2 String-to-Key may only be used with AEAD S2K parameters",
+    ):
+        S2kParams.cfb("aes256", StringToKey.argon2(3, 4, 16))
+
+
+def test_generate_passphrase_protected_key_supports_explicit_v4_cfb_s2k() -> None:
+    """Adapt upstream secret-key S2K coverage to the builder API for V4 keys."""
+
+    primary_s2k = S2kParams.cfb(
+        "aes256",
+        StringToKey.iterated(
+            "sha512",
+            96,
+            salt=bytes.fromhex("0011223344556677"),
+        ),
+        iv=bytes.fromhex("00112233445566778899aabbccddeeff"),
+    )
+    subkey_s2k = S2kParams.cfb(
+        "aes192",
+        StringToKey.iterated(
+            "sha256",
+            224,
+            salt=bytes.fromhex("8899aabbccddeeff"),
+        ),
+        iv=bytes.fromhex("ffeeddccbbaa99887766554433221100"),
+    )
+
+    protected_key = (
+        build_modern_signing_key(4)
+        .passphrase("hello")
+        .s2k(primary_s2k)
+        .subkey(
+            SubkeyParamsBuilder()
+            .version(4)
+            .key_type(KeyType.x25519())
+            .passphrase("hello")
+            .s2k(subkey_s2k)
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+        .build()
+        .generate()
+    )
+    public_key = protected_key.to_public_key()
+
+    reparsed_secret, _ = SecretKey.from_armor(protected_key.to_armored())
+
+    primary_protection = reparsed_secret.primary_secret_s2k()
+    assert primary_protection is not None
+    assert primary_protection.usage == "cfb"
+    assert primary_protection.symmetric_algorithm == "aes256"
+    assert primary_protection.aead_algorithm is None
+    assert primary_protection.iv == bytes.fromhex("00112233445566778899aabbccddeeff")
+    assert primary_protection.nonce is None
+    primary_string_to_key = primary_protection.string_to_key
+    assert primary_string_to_key is not None
+    assert primary_string_to_key.kind == "iterated-salted"
+    assert primary_string_to_key.hash_algorithm == "sha512"
+    assert primary_string_to_key.salt == bytes.fromhex("0011223344556677")
+    assert primary_string_to_key.count == 96
+    assert primary_string_to_key.passes is None
+    assert primary_string_to_key.parallelism is None
+    assert primary_string_to_key.memory_exponent is None
+
+    subkey_protections = reparsed_secret.secret_subkey_s2ks()
+    assert len(subkey_protections) == 1
+    subkey_protection = subkey_protections[0]
+    assert subkey_protection is not None
+    assert subkey_protection.usage == "cfb"
+    assert subkey_protection.symmetric_algorithm == "aes192"
+    assert subkey_protection.aead_algorithm is None
+    assert subkey_protection.iv == bytes.fromhex("ffeeddccbbaa99887766554433221100")
+    assert subkey_protection.nonce is None
+    subkey_string_to_key = subkey_protection.string_to_key
+    assert subkey_string_to_key is not None
+    assert subkey_string_to_key.kind == "iterated-salted"
+    assert subkey_string_to_key.hash_algorithm == "sha256"
+    assert subkey_string_to_key.salt == bytes.fromhex("8899aabbccddeeff")
+    assert subkey_string_to_key.count == 224
+    assert subkey_string_to_key.passes is None
+    assert subkey_string_to_key.parallelism is None
+    assert subkey_string_to_key.memory_exponent is None
+
+    armored = sign_message(b"payload", reparsed_secret, password="hello")
+    message, _ = Message.from_armor(armored)
+    message.verify(public_key)
+    assert message.payload_bytes() == b"payload"
+
+    encrypted = encrypt_message_to_recipient(b"secret", public_key)
+    encrypted_message, _ = Message.from_armor(encrypted)
+    assert encrypted_message.decrypt(reparsed_secret, "hello").payload_bytes() == b"secret"
+
+
+def test_generate_passphrase_protected_key_supports_explicit_v6_aead_s2k() -> None:
+    """Adapt upstream Argon2-based S2K docs to explicit V6 builder control."""
+
+    primary_s2k = S2kParams.aead(
+        "aes256",
+        "ocb",
+        StringToKey.argon2(
+            passes=3,
+            parallelism=4,
+            memory_exponent=16,
+            salt=bytes.fromhex("00112233445566778899aabbccddeeff"),
+        ),
+        nonce=bytes.fromhex("00112233445566778899aabbccddee"),
+    )
+    subkey_s2k = S2kParams.aead(
+        "aes128",
+        "gcm",
+        StringToKey.argon2(
+            passes=1,
+            parallelism=2,
+            memory_exponent=18,
+            salt=bytes.fromhex("ffeeddccbbaa99887766554433221100"),
+        ),
+        nonce=bytes.fromhex("00112233445566778899aabb"),
+    )
+
+    protected_key = (
+        build_modern_signing_key(6)
+        .passphrase("hello")
+        .s2k(primary_s2k)
+        .subkey(
+            SubkeyParamsBuilder()
+            .version(6)
+            .key_type(KeyType.x25519())
+            .passphrase("hello")
+            .s2k(subkey_s2k)
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+        .build()
+        .generate()
+    )
+    public_key = protected_key.to_public_key()
+
+    reparsed_secret, _ = SecretKey.from_armor(protected_key.to_armored())
+
+    primary_protection = reparsed_secret.primary_secret_s2k()
+    assert primary_protection is not None
+    assert primary_protection.usage == "aead"
+    assert primary_protection.symmetric_algorithm == "aes256"
+    assert primary_protection.aead_algorithm == "ocb"
+    assert primary_protection.iv is None
+    assert primary_protection.nonce == bytes.fromhex("00112233445566778899aabbccddee")
+    primary_string_to_key = primary_protection.string_to_key
+    assert primary_string_to_key is not None
+    assert primary_string_to_key.kind == "argon2"
+    assert primary_string_to_key.hash_algorithm is None
+    assert primary_string_to_key.salt == bytes.fromhex("00112233445566778899aabbccddeeff")
+    assert primary_string_to_key.count is None
+    assert primary_string_to_key.passes == 3
+    assert primary_string_to_key.parallelism == 4
+    assert primary_string_to_key.memory_exponent == 16
+
+    subkey_protections = reparsed_secret.secret_subkey_s2ks()
+    assert len(subkey_protections) == 1
+    subkey_protection = subkey_protections[0]
+    assert subkey_protection is not None
+    assert subkey_protection.usage == "aead"
+    assert subkey_protection.symmetric_algorithm == "aes128"
+    assert subkey_protection.aead_algorithm == "gcm"
+    assert subkey_protection.iv is None
+    assert subkey_protection.nonce == bytes.fromhex("00112233445566778899aabb")
+    subkey_string_to_key = subkey_protection.string_to_key
+    assert subkey_string_to_key is not None
+    assert subkey_string_to_key.kind == "argon2"
+    assert subkey_string_to_key.hash_algorithm is None
+    assert subkey_string_to_key.salt == bytes.fromhex("ffeeddccbbaa99887766554433221100")
+    assert subkey_string_to_key.count is None
+    assert subkey_string_to_key.passes == 1
+    assert subkey_string_to_key.parallelism == 2
+    assert subkey_string_to_key.memory_exponent == 18
+
+    armored = sign_message(b"payload", reparsed_secret, password="hello")
+    message, _ = Message.from_armor(armored)
+    message.verify(public_key)
+    assert message.payload_bytes() == b"payload"
+
+    encrypted = encrypt_message_to_recipient(b"secret", public_key)
+    encrypted_message, _ = Message.from_armor(encrypted)
+    assert encrypted_message.decrypt(reparsed_secret, "hello").payload_bytes() == b"secret"
