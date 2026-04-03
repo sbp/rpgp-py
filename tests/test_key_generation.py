@@ -47,6 +47,8 @@ AES256_ONLY: Final[list[SymmetricPreferenceName]] = ["aes256"]
 SHA512_ONLY: Final[list[HashPreferenceName]] = ["sha512"]
 ZLIB_ONLY: Final[list[CompressionPreferenceName]] = ["zlib"]
 JPEG_USER_ATTRIBUTE_DATA: Final[bytes] = bytes.fromhex("ffd8ffe000104a464946000101")
+FIXED_PRIMARY_CREATED_AT: Final[int] = 1_700_000_000
+FIXED_SUBKEY_CREATED_AT: Final[int] = FIXED_PRIMARY_CREATED_AT + 123
 
 
 class PacketHeaderInfo(NamedTuple):
@@ -199,6 +201,107 @@ def test_generate_legacy_curve25519_key_matches_docs_example() -> None:
     encrypted_message, _ = Message.from_armor(encrypted)
     decrypted = encrypted_message.decrypt(secret_key)
     assert decrypted.payload_bytes() == b"Hello World"
+
+
+@pytest.mark.parametrize("version", [4, 6])
+def test_generated_key_details_expose_version_algorithm_and_creation_time(
+    version: KeyVersion,
+) -> None:
+    """Adapt rPGP KeyDetails metadata into Python-visible certificate inspection."""
+
+    secret_key = (
+        SecretKeyParamsBuilder()
+        .version(version)
+        .created_at(FIXED_PRIMARY_CREATED_AT)
+        .key_type(KeyType.ed25519())
+        .can_certify(True)
+        .can_sign(True)
+        .primary_user_id("alice")
+        .subkey(
+            SubkeyParamsBuilder()
+            .version(version)
+            .created_at(FIXED_SUBKEY_CREATED_AT)
+            .key_type(KeyType.x25519())
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+        .build()
+        .generate()
+    )
+    public_key = secret_key.to_public_key()
+
+    assert secret_key.version == version
+    assert public_key.version == version
+    assert secret_key.created_at == FIXED_PRIMARY_CREATED_AT
+    assert public_key.created_at == FIXED_PRIMARY_CREATED_AT
+    assert secret_key.public_key_algorithm == "ed25519"
+    assert public_key.public_key_algorithm == "ed25519"
+
+    secret_binding = secret_key.subkey_bindings()[0]
+    public_binding = public_key.subkey_bindings()[0]
+    assert secret_binding.version == version
+    assert public_binding.version == version
+    assert secret_binding.created_at == FIXED_SUBKEY_CREATED_AT
+    assert public_binding.created_at == FIXED_SUBKEY_CREATED_AT
+    assert secret_binding.public_key_algorithm == "x25519"
+    assert public_binding.public_key_algorithm == "x25519"
+
+    reparsed_secret, _ = SecretKey.from_armor(secret_key.to_armored())
+    reparsed_public, _ = PublicKey.from_armor(public_key.to_armored())
+
+    assert reparsed_secret.version == version
+    assert reparsed_public.version == version
+    assert reparsed_secret.created_at == FIXED_PRIMARY_CREATED_AT
+    assert reparsed_public.created_at == FIXED_PRIMARY_CREATED_AT
+    assert reparsed_secret.public_key_algorithm == "ed25519"
+    assert reparsed_public.public_key_algorithm == "ed25519"
+
+    reparsed_secret_binding = reparsed_secret.subkey_bindings()[0]
+    reparsed_public_binding = reparsed_public.subkey_bindings()[0]
+    assert reparsed_secret_binding.version == version
+    assert reparsed_public_binding.version == version
+    assert reparsed_secret_binding.created_at == FIXED_SUBKEY_CREATED_AT
+    assert reparsed_public_binding.created_at == FIXED_SUBKEY_CREATED_AT
+    assert reparsed_secret_binding.public_key_algorithm == "x25519"
+    assert reparsed_public_binding.public_key_algorithm == "x25519"
+
+
+def test_legacy_curve25519_key_details_expose_algorithm_categories() -> None:
+    """The docs.rs legacy Curve25519 example exposes legacy and ECDH algorithm metadata."""
+
+    secret_key = (
+        SecretKeyParamsBuilder()
+        .created_at(FIXED_PRIMARY_CREATED_AT)
+        .key_type(KeyType.ed25519_legacy())
+        .can_certify(False)
+        .can_sign(True)
+        .primary_user_id("Me <me@example.com>")
+        .preferred_symmetric_algorithms(["aes128"])
+        .preferred_hash_algorithms(["sha256"])
+        .preferred_compression_algorithms([])
+        .subkey(
+            SubkeyParamsBuilder()
+            .created_at(FIXED_SUBKEY_CREATED_AT)
+            .key_type(KeyType.ecdh("curve25519"))
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+        .build()
+        .generate()
+    )
+    public_key = secret_key.to_public_key()
+
+    assert secret_key.public_key_algorithm == "eddsa-legacy"
+    assert public_key.public_key_algorithm == "eddsa-legacy"
+    assert secret_key.created_at == FIXED_PRIMARY_CREATED_AT
+    assert public_key.created_at == FIXED_PRIMARY_CREATED_AT
+
+    secret_binding = secret_key.subkey_bindings()[0]
+    public_binding = public_key.subkey_bindings()[0]
+    assert secret_binding.public_key_algorithm == "ecdh"
+    assert public_binding.public_key_algorithm == "ecdh"
+    assert secret_binding.created_at == FIXED_SUBKEY_CREATED_AT
+    assert public_binding.created_at == FIXED_SUBKEY_CREATED_AT
 
 
 @pytest.mark.parametrize("version", [4, 6])

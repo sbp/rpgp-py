@@ -28,6 +28,34 @@ DsaKeySizeBits: TypeAlias = Literal[1024, 2048, 3072]
 KeyVersionNumber: TypeAlias = Literal[4, 6]
 AeadPreference: TypeAlias = Tuple[SymmetricAlgorithmName, AeadAlgorithmName]
 PacketHeaderVersionName: TypeAlias = Literal["old", "new"]
+PublicKeyAlgorithmName: TypeAlias = Literal[
+    "rsa",
+    "rsa-encrypt",
+    "rsa-sign",
+    "elgamal-encrypt",
+    "dsa",
+    "ecdh",
+    "ecdsa",
+    "elgamal",
+    "diffie-hellman",
+    "eddsa-legacy",
+    "x25519",
+    "x448",
+    "ed25519",
+    "ed448",
+    "private-100",
+    "private-101",
+    "private-102",
+    "private-103",
+    "private-104",
+    "private-105",
+    "private-106",
+    "private-107",
+    "private-108",
+    "private-109",
+    "private-110",
+    "unknown",
+]
 
 
 class PacketHeaderVersion:
@@ -216,6 +244,12 @@ class PublicKey:
     @property
     def key_id(self) -> str: ...
     @property
+    def version(self) -> int: ...
+    @property
+    def created_at(self) -> int: ...
+    @property
+    def public_key_algorithm(self) -> PublicKeyAlgorithmName: ...
+    @property
     def packet_version(self) -> PacketHeaderVersion: ...
     @property
     def public_subkey_count(self) -> int: ...
@@ -239,6 +273,12 @@ class SecretKey:
     def fingerprint(self) -> str: ...
     @property
     def key_id(self) -> str: ...
+    @property
+    def version(self) -> int: ...
+    @property
+    def created_at(self) -> int: ...
+    @property
+    def public_key_algorithm(self) -> PublicKeyAlgorithmName: ...
     @property
     def packet_version(self) -> PacketHeaderVersion: ...
     @property
@@ -301,6 +341,12 @@ class SubkeyBindingInfo:
     def fingerprint(self) -> str: ...
     @property
     def key_id(self) -> str: ...
+    @property
+    def version(self) -> int: ...
+    @property
+    def created_at(self) -> int: ...
+    @property
+    def public_key_algorithm(self) -> PublicKeyAlgorithmName: ...
     @property
     def packet_version(self) -> PacketHeaderVersion: ...
     @property

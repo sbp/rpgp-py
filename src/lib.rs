@@ -14,6 +14,7 @@ use pgp::{
         aead::{AeadAlgorithm, ChunkSize},
         ecc_curve::ECCCurve,
         hash::HashAlgorithm,
+        public_key::PublicKeyAlgorithm as PgpPublicKeyAlgorithm,
         sym::SymmetricKeyAlgorithm,
     },
     packet::{
@@ -186,6 +187,42 @@ fn key_version_from_number(version: u8) -> PyResult<KeyVersion> {
 
 fn timestamp_from_seconds(seconds: u32) -> Timestamp {
     Timestamp::from_secs(seconds)
+}
+
+fn key_version_number(version: KeyVersion) -> u8 {
+    version.into()
+}
+
+fn public_key_algorithm_name(algorithm: PgpPublicKeyAlgorithm) -> &'static str {
+    match algorithm {
+        PgpPublicKeyAlgorithm::RSA => "rsa",
+        PgpPublicKeyAlgorithm::RSAEncrypt => "rsa-encrypt",
+        PgpPublicKeyAlgorithm::RSASign => "rsa-sign",
+        PgpPublicKeyAlgorithm::ElgamalEncrypt => "elgamal-encrypt",
+        PgpPublicKeyAlgorithm::DSA => "dsa",
+        PgpPublicKeyAlgorithm::ECDH => "ecdh",
+        PgpPublicKeyAlgorithm::ECDSA => "ecdsa",
+        PgpPublicKeyAlgorithm::Elgamal => "elgamal",
+        PgpPublicKeyAlgorithm::DiffieHellman => "diffie-hellman",
+        PgpPublicKeyAlgorithm::EdDSALegacy => "eddsa-legacy",
+        PgpPublicKeyAlgorithm::X25519 => "x25519",
+        PgpPublicKeyAlgorithm::X448 => "x448",
+        PgpPublicKeyAlgorithm::Ed25519 => "ed25519",
+        PgpPublicKeyAlgorithm::Ed448 => "ed448",
+        PgpPublicKeyAlgorithm::Private100 => "private-100",
+        PgpPublicKeyAlgorithm::Private101 => "private-101",
+        PgpPublicKeyAlgorithm::Private102 => "private-102",
+        PgpPublicKeyAlgorithm::Private103 => "private-103",
+        PgpPublicKeyAlgorithm::Private104 => "private-104",
+        PgpPublicKeyAlgorithm::Private105 => "private-105",
+        PgpPublicKeyAlgorithm::Private106 => "private-106",
+        PgpPublicKeyAlgorithm::Private107 => "private-107",
+        PgpPublicKeyAlgorithm::Private108 => "private-108",
+        PgpPublicKeyAlgorithm::Private109 => "private-109",
+        PgpPublicKeyAlgorithm::Private110 => "private-110",
+        PgpPublicKeyAlgorithm::Unknown(_) => "unknown",
+        _ => "unknown",
+    }
 }
 
 fn hash_algorithm_from_name(name: &str) -> PyResult<HashAlgorithm> {
@@ -746,6 +783,9 @@ fn subkey_binding_info_from_signed_public_subkey(subkey: &SignedPublicSubKey) ->
     SubkeyBindingInfo {
         fingerprint: subkey.key.fingerprint().to_string(),
         key_id: subkey.key.legacy_key_id().to_string(),
+        version: key_version_number(subkey.key.version()),
+        created_at: subkey.key.created_at().as_secs(),
+        public_key_algorithm: public_key_algorithm_name(subkey.key.algorithm()).to_string(),
         packet_version: subkey.key.packet_header_version(),
         signatures: subkey
             .signatures
@@ -759,6 +799,9 @@ fn subkey_binding_info_from_signed_secret_subkey(subkey: &SignedSecretSubKey) ->
     SubkeyBindingInfo {
         fingerprint: subkey.key.public_key().fingerprint().to_string(),
         key_id: subkey.key.public_key().legacy_key_id().to_string(),
+        version: key_version_number(subkey.key.version()),
+        created_at: subkey.key.created_at().as_secs(),
+        public_key_algorithm: public_key_algorithm_name(subkey.key.algorithm()).to_string(),
         packet_version: subkey.key.packet_header_version(),
         signatures: subkey
             .signatures
@@ -1672,6 +1715,24 @@ impl PublicKey {
         self.inner.legacy_key_id().to_string()
     }
 
+    /// The OpenPGP key-packet version number of the primary key.
+    #[getter]
+    fn version(&self) -> u8 {
+        key_version_number(self.inner.primary_key.version())
+    }
+
+    /// The primary key packet's creation time as seconds since the Unix epoch.
+    #[getter]
+    fn created_at(&self) -> u32 {
+        self.inner.primary_key.created_at().as_secs()
+    }
+
+    /// The primary key packet's public-key algorithm.
+    #[getter]
+    fn public_key_algorithm(&self) -> String {
+        public_key_algorithm_name(self.inner.primary_key.algorithm()).to_string()
+    }
+
     /// The RFC 9580 packet-header framing used by the primary key packet.
     #[getter]
     fn packet_version(&self) -> PyPacketHeaderVersion {
@@ -1789,6 +1850,24 @@ impl SecretKey {
             .public_key()
             .legacy_key_id()
             .to_string()
+    }
+
+    /// The OpenPGP key-packet version number of the primary key.
+    #[getter]
+    fn version(&self) -> u8 {
+        key_version_number(self.inner.primary_key.version())
+    }
+
+    /// The primary key packet's creation time as seconds since the Unix epoch.
+    #[getter]
+    fn created_at(&self) -> u32 {
+        self.inner.primary_key.created_at().as_secs()
+    }
+
+    /// The primary key packet's public-key algorithm.
+    #[getter]
+    fn public_key_algorithm(&self) -> String {
+        public_key_algorithm_name(self.inner.primary_key.algorithm()).to_string()
     }
 
     /// The RFC 9580 packet-header framing used by the primary secret-key packet.
@@ -2516,6 +2595,9 @@ impl FeaturesInfo {
 struct SubkeyBindingInfo {
     fingerprint: String,
     key_id: String,
+    version: u8,
+    created_at: u32,
+    public_key_algorithm: String,
     packet_version: PgpPacketHeaderVersion,
     signatures: Vec<SignatureInfo>,
 }
@@ -2532,6 +2614,24 @@ impl SubkeyBindingInfo {
     #[getter]
     fn key_id(&self) -> String {
         self.key_id.clone()
+    }
+
+    /// The OpenPGP key-packet version number of this subkey.
+    #[getter]
+    fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// The subkey packet's creation time as seconds since the Unix epoch.
+    #[getter]
+    fn created_at(&self) -> u32 {
+        self.created_at
+    }
+
+    /// The subkey packet's public-key algorithm.
+    #[getter]
+    fn public_key_algorithm(&self) -> String {
+        self.public_key_algorithm.clone()
     }
 
     /// The RFC 9580 packet-header framing used by this subkey packet.
