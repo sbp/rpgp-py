@@ -147,7 +147,10 @@ def test_sign_and_verify_detached_signature() -> None:
     assert info.hash_algorithm == "SHA256"
     assert info.is_one_pass is False
     signature.verify(public_key, payload)
-    assert signature.verify_signature(public_key, payload).signed_hash_value == info.signed_hash_value
+    assert (
+        signature.verify_signature(public_key, payload).signed_hash_value
+        == info.signed_hash_value
+    )
 
     reparsed = DetachedSignature.from_bytes(signature.to_bytes())
     reparsed.verify(public_key, payload)
@@ -240,7 +243,9 @@ def test_decrypted_signed_openpgp_interop_message_supports_signature_verificatio
     public_key, _ = PublicKey.from_armor(
         read_fixture_text(f"openpgp-interop/{case['verifyKey']}")
     )
-    message, _ = Message.from_armor(read_fixture_text(f"openpgp-interop/{case_name}.asc"))
+    message, _ = Message.from_armor(
+        read_fixture_text(f"openpgp-interop/{case_name}.asc")
+    )
 
     assert case["type"] == "decrypt"
     secret_key.verify_bindings()

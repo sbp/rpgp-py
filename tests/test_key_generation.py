@@ -263,7 +263,9 @@ def test_generate_passphrase_protected_key_requires_password_for_signing() -> No
 
     encrypted = encrypt_message_to_recipient(b"secret", public_key)
     encrypted_message, _ = Message.from_armor(encrypted)
-    assert encrypted_message.decrypt(reparsed_secret, "hello").payload_bytes() == b"secret"
+    assert (
+        encrypted_message.decrypt(reparsed_secret, "hello").payload_bytes() == b"secret"
+    )
 
 
 @pytest.mark.parametrize(
@@ -347,34 +349,38 @@ def test_builder_validation_errors_are_exposed_to_python(
     ("builder", "match"),
     [
         (
-            lambda: SecretKeyParamsBuilder()
-            .version(6)
-            .key_type(KeyType.ed25519())
-            .can_certify(True)
-            .can_sign(True)
-            .primary_user_id("alice")
-            .subkey(
-                SubkeyParamsBuilder()
+            lambda: (
+                SecretKeyParamsBuilder()
                 .version(6)
-                .key_type(KeyType.x25519())
+                .key_type(KeyType.ed25519())
+                .can_certify(True)
                 .can_sign(True)
-                .build()
+                .primary_user_id("alice")
+                .subkey(
+                    SubkeyParamsBuilder()
+                    .version(6)
+                    .key_type(KeyType.x25519())
+                    .can_sign(True)
+                    .build()
+                )
             ),
             "can not be used for signing keys",
         ),
         (
-            lambda: SecretKeyParamsBuilder()
-            .version(6)
-            .key_type(KeyType.ed25519())
-            .can_certify(True)
-            .can_sign(True)
-            .primary_user_id("alice")
-            .subkey(
-                SubkeyParamsBuilder()
+            lambda: (
+                SecretKeyParamsBuilder()
                 .version(6)
                 .key_type(KeyType.ed25519())
-                .can_encrypt(EncryptionCaps.all())
-                .build()
+                .can_certify(True)
+                .can_sign(True)
+                .primary_user_id("alice")
+                .subkey(
+                    SubkeyParamsBuilder()
+                    .version(6)
+                    .key_type(KeyType.ed25519())
+                    .can_encrypt(EncryptionCaps.all())
+                    .build()
+                )
             ),
             "can not be used for encryption keys",
         ),
@@ -423,7 +429,6 @@ def test_signing_capable_subkey_generation_verifies_bindings() -> None:
     assert public_key.public_subkey_count == 1
     secret_key.verify_bindings()
     public_key.verify_bindings()
-
 
 
 def build_certificate_metadata_key(
@@ -527,7 +532,6 @@ def test_v4_certificate_metadata_is_exposed_on_primary_user_binding_signature() 
     )
 
 
-
 def test_v6_certificate_metadata_moves_to_direct_key_signature() -> None:
     """Adapt upstream `test_cert_metadata_gen_v6_v6` into Python-visible metadata access."""
 
@@ -584,7 +588,6 @@ def test_v6_certificate_metadata_moves_to_direct_key_signature() -> None:
     assert public_binding_info.features is None
 
 
-
 def test_v6_id_less_certificate_still_exposes_direct_key_signature_metadata() -> None:
     """Adapt upstream `test_cert_metadata_gen_v6_v6_id_less` into Python-visible metadata access."""
 
@@ -622,12 +625,7 @@ def test_user_attribute_image_packets_roundtrip_from_builder() -> None:
 
     portrait = UserAttribute.image_jpeg(JPEG_USER_ATTRIBUTE_DATA)
 
-    secret_key = (
-        build_modern_signing_key(4)
-        .user_attribute(portrait)
-        .build()
-        .generate()
-    )
+    secret_key = build_modern_signing_key(4).user_attribute(portrait).build().generate()
     public_key = secret_key.to_public_key()
 
     secret_attributes = secret_key.user_attribute_bindings()
@@ -652,8 +650,14 @@ def test_user_attribute_image_packets_roundtrip_from_builder() -> None:
 
     reparsed_secret, _ = SecretKey.from_armor(secret_key.to_armored())
     reparsed_public, _ = PublicKey.from_armor(public_key.to_armored())
-    assert reparsed_secret.user_attribute_bindings()[0].user_attribute.data == JPEG_USER_ATTRIBUTE_DATA
-    assert reparsed_public.user_attribute_bindings()[0].user_attribute.data == JPEG_USER_ATTRIBUTE_DATA
+    assert (
+        reparsed_secret.user_attribute_bindings()[0].user_attribute.data
+        == JPEG_USER_ATTRIBUTE_DATA
+    )
+    assert (
+        reparsed_public.user_attribute_bindings()[0].user_attribute.data
+        == JPEG_USER_ATTRIBUTE_DATA
+    )
 
 
 @pytest.mark.parametrize("version", [4, 6])
@@ -681,7 +685,6 @@ def test_user_attribute_sequence_builder_preserves_order(version: KeyVersion) ->
         assert binding.user_attribute.image_header_version == 1
         assert len(binding.signatures) == 1
         assert binding.signatures[0].signature_type == "cert-positive"
-
 
 
 def test_s2k_params_reject_argon2_with_cfb_usage() -> None:
@@ -779,7 +782,9 @@ def test_generate_passphrase_protected_key_supports_explicit_v4_cfb_s2k() -> Non
 
     encrypted = encrypt_message_to_recipient(b"secret", public_key)
     encrypted_message, _ = Message.from_armor(encrypted)
-    assert encrypted_message.decrypt(reparsed_secret, "hello").payload_bytes() == b"secret"
+    assert (
+        encrypted_message.decrypt(reparsed_secret, "hello").payload_bytes() == b"secret"
+    )
 
 
 def test_generate_passphrase_protected_key_supports_explicit_v6_aead_s2k() -> None:
@@ -839,7 +844,9 @@ def test_generate_passphrase_protected_key_supports_explicit_v6_aead_s2k() -> No
     assert primary_string_to_key is not None
     assert primary_string_to_key.kind == "argon2"
     assert primary_string_to_key.hash_algorithm is None
-    assert primary_string_to_key.salt == bytes.fromhex("00112233445566778899aabbccddeeff")
+    assert primary_string_to_key.salt == bytes.fromhex(
+        "00112233445566778899aabbccddeeff"
+    )
     assert primary_string_to_key.count is None
     assert primary_string_to_key.passes == 3
     assert primary_string_to_key.parallelism == 4
@@ -858,7 +865,9 @@ def test_generate_passphrase_protected_key_supports_explicit_v6_aead_s2k() -> No
     assert subkey_string_to_key is not None
     assert subkey_string_to_key.kind == "argon2"
     assert subkey_string_to_key.hash_algorithm is None
-    assert subkey_string_to_key.salt == bytes.fromhex("ffeeddccbbaa99887766554433221100")
+    assert subkey_string_to_key.salt == bytes.fromhex(
+        "ffeeddccbbaa99887766554433221100"
+    )
     assert subkey_string_to_key.count is None
     assert subkey_string_to_key.passes == 1
     assert subkey_string_to_key.parallelism == 2
@@ -871,7 +880,9 @@ def test_generate_passphrase_protected_key_supports_explicit_v6_aead_s2k() -> No
 
     encrypted = encrypt_message_to_recipient(b"secret", public_key)
     encrypted_message, _ = Message.from_armor(encrypted)
-    assert encrypted_message.decrypt(reparsed_secret, "hello").payload_bytes() == b"secret"
+    assert (
+        encrypted_message.decrypt(reparsed_secret, "hello").payload_bytes() == b"secret"
+    )
 
 
 def test_packet_version_builder_controls_primary_and_subkey_packet_framing() -> None:
@@ -939,11 +950,19 @@ def test_packet_version_roundtrips_through_secret_and_public_serialization(
     reparsed_secret = SecretKey.from_bytes(secret_key.to_bytes())
     reparsed_public = PublicKey.from_bytes(secret_key.to_public_key().to_bytes())
 
-    assert [header.version for header in parse_packet_headers(reparsed_secret.to_bytes()) if header.tag in {SECRET_KEY_TAG, SECRET_SUBKEY_TAG}] == [
+    assert [
+        header.version
+        for header in parse_packet_headers(reparsed_secret.to_bytes())
+        if header.tag in {SECRET_KEY_TAG, SECRET_SUBKEY_TAG}
+    ] == [
         expected_version,
         expected_version,
     ]
-    assert [header.version for header in parse_packet_headers(reparsed_public.to_bytes()) if header.tag in {PUBLIC_KEY_TAG, PUBLIC_SUBKEY_TAG}] == [
+    assert [
+        header.version
+        for header in parse_packet_headers(reparsed_public.to_bytes())
+        if header.tag in {PUBLIC_KEY_TAG, PUBLIC_SUBKEY_TAG}
+    ] == [
         expected_version,
         expected_version,
     ]
