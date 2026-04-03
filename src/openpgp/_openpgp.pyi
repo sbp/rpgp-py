@@ -24,6 +24,17 @@ CurveName: TypeAlias = Literal[
     "brainpoolp512r1",
     "secp256k1",
 ]
+EccCurveName: TypeAlias = Literal[
+    "curve25519",
+    "ed25519",
+    "p256",
+    "p384",
+    "p521",
+    "brainpoolp256r1",
+    "brainpoolp384r1",
+    "brainpoolp512r1",
+    "secp256k1",
+]
 DsaKeySizeBits: TypeAlias = Literal[1024, 2048, 3072]
 KeyVersionNumber: TypeAlias = Literal[4, 6]
 AeadPreference: TypeAlias = Tuple[SymmetricAlgorithmName, AeadAlgorithmName]
@@ -54,6 +65,19 @@ PublicKeyAlgorithmName: TypeAlias = Literal[
     "private-108",
     "private-109",
     "private-110",
+    "unknown",
+]
+PublicParamsKindName: TypeAlias = Literal[
+    "rsa",
+    "dsa",
+    "ecdsa",
+    "ecdh",
+    "elgamal",
+    "eddsa-legacy",
+    "ed25519",
+    "x25519",
+    "x448",
+    "ed448",
     "unknown",
 ]
 
@@ -234,6 +258,29 @@ class SecretKeyParamsBuilder:
     def generate(self) -> SecretKey: ...
 
 
+class PublicParamsInfo:
+    @property
+    def kind(self) -> PublicParamsKindName: ...
+    @property
+    def curve(self) -> Optional[EccCurveName]: ...
+    @property
+    def curve_oid(self) -> Optional[str]: ...
+    @property
+    def curve_alias(self) -> Optional[str]: ...
+    @property
+    def curve_bits(self) -> Optional[int]: ...
+    @property
+    def secret_key_length(self) -> Optional[int]: ...
+    @property
+    def is_supported(self) -> Optional[bool]: ...
+    @property
+    def kdf_hash_algorithm(self) -> Optional[HashAlgorithmName]: ...
+    @property
+    def kdf_symmetric_algorithm(self) -> Optional[SymmetricAlgorithmName]: ...
+    @property
+    def kdf_type(self) -> Optional[str]: ...
+
+
 class PublicKey:
     @staticmethod
     def from_armor(data: str) -> Tuple[PublicKey, Headers]: ...
@@ -249,6 +296,8 @@ class PublicKey:
     def created_at(self) -> int: ...
     @property
     def public_key_algorithm(self) -> PublicKeyAlgorithmName: ...
+    @property
+    def public_params(self) -> PublicParamsInfo: ...
     @property
     def packet_version(self) -> PacketHeaderVersion: ...
     @property
@@ -279,6 +328,8 @@ class SecretKey:
     def created_at(self) -> int: ...
     @property
     def public_key_algorithm(self) -> PublicKeyAlgorithmName: ...
+    @property
+    def public_params(self) -> PublicParamsInfo: ...
     @property
     def packet_version(self) -> PacketHeaderVersion: ...
     @property
@@ -347,6 +398,8 @@ class SubkeyBindingInfo:
     def created_at(self) -> int: ...
     @property
     def public_key_algorithm(self) -> PublicKeyAlgorithmName: ...
+    @property
+    def public_params(self) -> PublicParamsInfo: ...
     @property
     def packet_version(self) -> PacketHeaderVersion: ...
     @property

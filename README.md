@@ -118,6 +118,9 @@ assert secret_key.packet_version == PacketHeaderVersion.new()
 assert public_key.version == 6
 assert public_key.created_at == 1_700_000_000
 assert public_key.public_key_algorithm == "ed25519"
+assert public_key.public_params.kind == "ed25519"
+assert public_key.public_params.curve == "ed25519"
+assert public_key.public_params.secret_key_length == 32
 assert public_key.packet_version == PacketHeaderVersion.new()
 assert public_key.packet_version.name == "new"
 
@@ -144,6 +147,9 @@ subkey_binding = public_key.subkey_bindings()[0]
 assert subkey_binding.version == 6
 assert subkey_binding.created_at == 1_700_000_123
 assert subkey_binding.public_key_algorithm == "x25519"
+assert subkey_binding.public_params.kind == "x25519"
+assert subkey_binding.public_params.curve == "curve25519"
+assert subkey_binding.public_params.secret_key_length == 32
 assert subkey_binding.packet_version == PacketHeaderVersion.new()
 assert subkey_binding.packet_version.name == "new"
 assert subkey_binding.signatures[0].signature_type == "subkey-binding"
@@ -162,9 +168,12 @@ assert encrypted_message.decrypt(secret_key).payload_bytes() == b"secret"
 Use `PacketHeaderVersion.old()` when you need legacy packet-header framing for the serialized
 primary-key or subkey packets, for example when round-tripping older transferable key material.
 Generated keys and `subkey_bindings()` also expose the OpenPGP key `version`, `created_at`, and
-`public_key_algorithm` surfaced by rPGP's `KeyDetails` trait. The separate `packet_version`
-property continues to describe old/new RFC 9580 packet-header framing, and `PacketHeaderVersion`
-values compare by value while also exposing `.name` for lightweight checks.
+`public_key_algorithm` surfaced by rPGP's `KeyDetails` trait. The companion `public_params`
+property exposes algorithm-specific metadata from `KeyDetails.public_params()`, including ECC curve
+names, nominal bit lengths, supported/unsupported curve status, and ECDH KDF details when present.
+The separate `packet_version` property continues to describe old/new RFC 9580 packet-header
+framing, and `PacketHeaderVersion` values compare by value while also exposing `.name` for
+lightweight checks.
 
 For signing-capable subkeys, `subkey_bindings()[0].signatures[0].embedded_signature` exposes the
 embedded primary-key-binding signature that RFC 9580 requires for back-signing.

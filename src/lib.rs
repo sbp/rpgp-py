@@ -25,10 +25,12 @@ use pgp::{
     },
     ser::Serialize,
     types::{
-        CompressionAlgorithm, KeyDetails, KeyVersion,
+        CompressionAlgorithm, EcdhPublicParams as PgpEcdhPublicParams,
+        EcdsaPublicParams as PgpEcdsaPublicParams,
+        EddsaLegacyPublicParams as PgpEddsaLegacyPublicParams, KeyDetails, KeyVersion,
         PacketHeaderVersion as PgpPacketHeaderVersion, PacketLength, Password,
-        S2kParams as PgpS2kParams, SecretParams as PgpSecretParams, StringToKey as PgpStringToKey,
-        Tag, Timestamp,
+        PublicParams as PgpPublicParams, S2kParams as PgpS2kParams,
+        SecretParams as PgpSecretParams, StringToKey as PgpStringToKey, Tag, Timestamp,
     },
 };
 use pyo3::{
@@ -223,6 +225,193 @@ fn public_key_algorithm_name(algorithm: PgpPublicKeyAlgorithm) -> &'static str {
         PgpPublicKeyAlgorithm::Unknown(_) => "unknown",
         _ => "unknown",
     }
+}
+
+fn public_params_kind_name(params: &PgpPublicParams) -> &'static str {
+    match params {
+        PgpPublicParams::RSA(_) => "rsa",
+        PgpPublicParams::DSA(_) => "dsa",
+        PgpPublicParams::ECDSA(_) => "ecdsa",
+        PgpPublicParams::ECDH(_) => "ecdh",
+        PgpPublicParams::Elgamal(_) => "elgamal",
+        PgpPublicParams::EdDSALegacy(_) => "eddsa-legacy",
+        PgpPublicParams::Ed25519(_) => "ed25519",
+        PgpPublicParams::X25519(_) => "x25519",
+        PgpPublicParams::X448(_) => "x448",
+        PgpPublicParams::Ed448(_) => "ed448",
+        PgpPublicParams::Unknown { .. } => "unknown",
+    }
+}
+
+fn curve_name_from_ecc_curve(curve: &ECCCurve) -> Option<&'static str> {
+    match curve {
+        ECCCurve::Curve25519 => Some("curve25519"),
+        ECCCurve::Ed25519 => Some("ed25519"),
+        ECCCurve::P256 => Some("p256"),
+        ECCCurve::P384 => Some("p384"),
+        ECCCurve::P521 => Some("p521"),
+        ECCCurve::BrainpoolP256r1 => Some("brainpoolp256r1"),
+        ECCCurve::BrainpoolP384r1 => Some("brainpoolp384r1"),
+        ECCCurve::BrainpoolP512r1 => Some("brainpoolp512r1"),
+        ECCCurve::Secp256k1 => Some("secp256k1"),
+        ECCCurve::Unknown(_) => None,
+    }
+}
+
+fn curve_bit_length_from_ecc_curve(curve: &ECCCurve) -> Option<u16> {
+    match curve {
+        ECCCurve::Curve25519
+        | ECCCurve::Ed25519
+        | ECCCurve::P256
+        | ECCCurve::BrainpoolP256r1
+        | ECCCurve::Secp256k1 => Some(256),
+        ECCCurve::P384 | ECCCurve::BrainpoolP384r1 => Some(384),
+        ECCCurve::P521 => Some(521),
+        ECCCurve::BrainpoolP512r1 => Some(512),
+        ECCCurve::Unknown(_) => None,
+    }
+}
+
+fn curve_secret_key_length_from_ecc_curve(curve: &ECCCurve) -> Option<usize> {
+    match curve {
+        ECCCurve::Curve25519
+        | ECCCurve::Ed25519
+        | ECCCurve::P256
+        | ECCCurve::BrainpoolP256r1
+        | ECCCurve::Secp256k1 => Some(32),
+        ECCCurve::P384 | ECCCurve::BrainpoolP384r1 => Some(48),
+        ECCCurve::P521 => Some(66),
+        ECCCurve::BrainpoolP512r1 => Some(64),
+        ECCCurve::Unknown(_) => None,
+    }
+}
+
+fn empty_public_params_info(kind: &str) -> PublicParamsInfo {
+    PublicParamsInfo {
+        kind: kind.to_string(),
+        curve: None,
+        curve_oid: None,
+        curve_alias: None,
+        curve_bits: None,
+        secret_key_length: None,
+        is_supported: None,
+        kdf_hash_algorithm: None,
+        kdf_symmetric_algorithm: None,
+        kdf_type: None,
+    }
+}
+
+fn set_curve_metadata(info: &mut PublicParamsInfo, curve: &ECCCurve) {
+    info.curve = curve_name_from_ecc_curve(curve).map(str::to_string);
+    info.curve_oid = Some(curve.oid_str());
+    info.curve_alias = curve.alias().map(str::to_string);
+    info.curve_bits = curve_bit_length_from_ecc_curve(curve);
+    info.secret_key_length = curve_secret_key_length_from_ecc_curve(curve);
+}
+
+fn public_params_info_from_params(params: &PgpPublicParams) -> PublicParamsInfo {
+    let kind = public_params_kind_name(params);
+    let mut info = empty_public_params_info(kind);
+
+    match params {
+        PgpPublicParams::ECDSA(params) => match params {
+            PgpEcdsaPublicParams::P256 { .. } => {
+                set_curve_metadata(&mut info, &ECCCurve::P256);
+                info.is_supported = Some(true);
+            }
+            PgpEcdsaPublicParams::P384 { .. } => {
+                set_curve_metadata(&mut info, &ECCCurve::P384);
+                info.is_supported = Some(true);
+            }
+            PgpEcdsaPublicParams::P521 { .. } => {
+                set_curve_metadata(&mut info, &ECCCurve::P521);
+                info.is_supported = Some(true);
+            }
+            PgpEcdsaPublicParams::Secp256k1 { .. } => {
+                set_curve_metadata(&mut info, &ECCCurve::Secp256k1);
+                info.is_supported = Some(true);
+            }
+            PgpEcdsaPublicParams::Unsupported { curve, .. } => {
+                set_curve_metadata(&mut info, curve);
+                info.is_supported = Some(false);
+            }
+        },
+        PgpPublicParams::ECDH(params) => match params {
+            PgpEcdhPublicParams::Curve25519 {
+                hash,
+                alg_sym,
+                ecdh_kdf_type,
+                ..
+            } => {
+                set_curve_metadata(&mut info, &ECCCurve::Curve25519);
+                info.is_supported = Some(true);
+                info.kdf_hash_algorithm = Some(normalized_algorithm_name(hash));
+                info.kdf_symmetric_algorithm = Some(normalized_algorithm_name(alg_sym));
+                info.kdf_type = Some(normalized_algorithm_name(ecdh_kdf_type));
+            }
+            PgpEcdhPublicParams::P256 { hash, alg_sym, .. } => {
+                set_curve_metadata(&mut info, &ECCCurve::P256);
+                info.is_supported = Some(true);
+                info.kdf_hash_algorithm = Some(normalized_algorithm_name(hash));
+                info.kdf_symmetric_algorithm = Some(normalized_algorithm_name(alg_sym));
+            }
+            PgpEcdhPublicParams::P384 { hash, alg_sym, .. } => {
+                set_curve_metadata(&mut info, &ECCCurve::P384);
+                info.is_supported = Some(true);
+                info.kdf_hash_algorithm = Some(normalized_algorithm_name(hash));
+                info.kdf_symmetric_algorithm = Some(normalized_algorithm_name(alg_sym));
+            }
+            PgpEcdhPublicParams::P521 { hash, alg_sym, .. } => {
+                set_curve_metadata(&mut info, &ECCCurve::P521);
+                info.is_supported = Some(true);
+                info.kdf_hash_algorithm = Some(normalized_algorithm_name(hash));
+                info.kdf_symmetric_algorithm = Some(normalized_algorithm_name(alg_sym));
+            }
+            PgpEcdhPublicParams::Brainpool256 { hash, alg_sym, .. } => {
+                set_curve_metadata(&mut info, &ECCCurve::BrainpoolP256r1);
+                info.is_supported = Some(true);
+                info.kdf_hash_algorithm = Some(normalized_algorithm_name(hash));
+                info.kdf_symmetric_algorithm = Some(normalized_algorithm_name(alg_sym));
+            }
+            PgpEcdhPublicParams::Brainpool384 { hash, alg_sym, .. } => {
+                set_curve_metadata(&mut info, &ECCCurve::BrainpoolP384r1);
+                info.is_supported = Some(true);
+                info.kdf_hash_algorithm = Some(normalized_algorithm_name(hash));
+                info.kdf_symmetric_algorithm = Some(normalized_algorithm_name(alg_sym));
+            }
+            PgpEcdhPublicParams::Brainpool512 { hash, alg_sym, .. } => {
+                set_curve_metadata(&mut info, &ECCCurve::BrainpoolP512r1);
+                info.is_supported = Some(true);
+                info.kdf_hash_algorithm = Some(normalized_algorithm_name(hash));
+                info.kdf_symmetric_algorithm = Some(normalized_algorithm_name(alg_sym));
+            }
+            PgpEcdhPublicParams::Unsupported { curve, .. } => {
+                set_curve_metadata(&mut info, curve);
+                info.is_supported = Some(false);
+            }
+        },
+        PgpPublicParams::EdDSALegacy(params) => match params {
+            PgpEddsaLegacyPublicParams::Ed25519 { .. } => {
+                set_curve_metadata(&mut info, &ECCCurve::Ed25519);
+                info.is_supported = Some(true);
+            }
+            PgpEddsaLegacyPublicParams::Unsupported { curve, .. } => {
+                set_curve_metadata(&mut info, curve);
+                info.is_supported = Some(false);
+            }
+        },
+        PgpPublicParams::Ed25519(_) => {
+            set_curve_metadata(&mut info, &ECCCurve::Ed25519);
+            info.is_supported = Some(true);
+        }
+        PgpPublicParams::X25519(_) => {
+            set_curve_metadata(&mut info, &ECCCurve::Curve25519);
+            info.is_supported = Some(true);
+        }
+        _ => {}
+    }
+
+    info
 }
 
 fn hash_algorithm_from_name(name: &str) -> PyResult<HashAlgorithm> {
@@ -786,6 +975,7 @@ fn subkey_binding_info_from_signed_public_subkey(subkey: &SignedPublicSubKey) ->
         version: key_version_number(subkey.key.version()),
         created_at: subkey.key.created_at().as_secs(),
         public_key_algorithm: public_key_algorithm_name(subkey.key.algorithm()).to_string(),
+        public_params: public_params_info_from_params(subkey.key.public_params()),
         packet_version: subkey.key.packet_header_version(),
         signatures: subkey
             .signatures
@@ -802,6 +992,7 @@ fn subkey_binding_info_from_signed_secret_subkey(subkey: &SignedSecretSubKey) ->
         version: key_version_number(subkey.key.version()),
         created_at: subkey.key.created_at().as_secs(),
         public_key_algorithm: public_key_algorithm_name(subkey.key.algorithm()).to_string(),
+        public_params: public_params_info_from_params(subkey.key.public_params()),
         packet_version: subkey.key.packet_header_version(),
         signatures: subkey
             .signatures
@@ -1733,6 +1924,12 @@ impl PublicKey {
         public_key_algorithm_name(self.inner.primary_key.algorithm()).to_string()
     }
 
+    /// Structured algorithm-specific public-key metadata from `KeyDetails.public_params()`.
+    #[getter]
+    fn public_params(&self) -> PublicParamsInfo {
+        public_params_info_from_params(self.inner.primary_key.public_params())
+    }
+
     /// The RFC 9580 packet-header framing used by the primary key packet.
     #[getter]
     fn packet_version(&self) -> PyPacketHeaderVersion {
@@ -1868,6 +2065,12 @@ impl SecretKey {
     #[getter]
     fn public_key_algorithm(&self) -> String {
         public_key_algorithm_name(self.inner.primary_key.algorithm()).to_string()
+    }
+
+    /// Structured algorithm-specific public-key metadata from `KeyDetails.public_params()`.
+    #[getter]
+    fn public_params(&self) -> PublicParamsInfo {
+        public_params_info_from_params(self.inner.primary_key.public_params())
     }
 
     /// The RFC 9580 packet-header framing used by the primary secret-key packet.
@@ -2589,6 +2792,92 @@ impl FeaturesInfo {
     }
 }
 
+/// Structured `KeyDetails.public_params()` metadata for a key packet.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+struct PublicParamsInfo {
+    kind: String,
+    curve: Option<String>,
+    curve_oid: Option<String>,
+    curve_alias: Option<String>,
+    curve_bits: Option<u16>,
+    secret_key_length: Option<usize>,
+    is_supported: Option<bool>,
+    kdf_hash_algorithm: Option<String>,
+    kdf_symmetric_algorithm: Option<String>,
+    kdf_type: Option<String>,
+}
+
+#[pymethods]
+impl PublicParamsInfo {
+    /// The normalized `PublicParams` variant name.
+    #[getter]
+    fn kind(&self) -> String {
+        self.kind.clone()
+    }
+
+    /// The normalized ECC curve name, when this key uses an elliptic-curve algorithm.
+    #[getter]
+    fn curve(&self) -> Option<String> {
+        self.curve.clone()
+    }
+
+    /// The IETF OID string for elliptic-curve based keys, when available.
+    #[getter]
+    fn curve_oid(&self) -> Option<String> {
+        self.curve_oid.clone()
+    }
+
+    /// The alternate curve alias exposed by rPGP, when available.
+    #[getter]
+    fn curve_alias(&self) -> Option<String> {
+        self.curve_alias.clone()
+    }
+
+    /// The nominal elliptic-curve size in bits, when available.
+    #[getter]
+    fn curve_bits(&self) -> Option<u16> {
+        self.curve_bits
+    }
+
+    /// The expected secret-key length in bytes for supported ECC algorithms, when available.
+    #[getter]
+    fn secret_key_length(&self) -> Option<usize> {
+        self.secret_key_length
+    }
+
+    /// Whether rPGP recognizes and parses the curve-specific key material.
+    #[getter]
+    fn is_supported(&self) -> Option<bool> {
+        self.is_supported
+    }
+
+    /// The ECDH KDF hash algorithm, when encoded in the public parameters.
+    #[getter]
+    fn kdf_hash_algorithm(&self) -> Option<String> {
+        self.kdf_hash_algorithm.clone()
+    }
+
+    /// The ECDH KDF symmetric algorithm, when encoded in the public parameters.
+    #[getter]
+    fn kdf_symmetric_algorithm(&self) -> Option<String> {
+        self.kdf_symmetric_algorithm.clone()
+    }
+
+    /// The ECDH KDF flavor for Curve25519 packets, when encoded.
+    #[getter]
+    fn kdf_type(&self) -> Option<String> {
+        self.kdf_type.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.curve {
+            Some(curve) => format!("PublicParamsInfo(kind='{}', curve='{}')", self.kind, curve),
+            None => format!("PublicParamsInfo(kind='{}')", self.kind),
+        }
+    }
+}
+
 /// A subkey and its attached binding or revocation signatures.
 #[pyclass(module = "openpgp")]
 #[derive(Clone)]
@@ -2598,6 +2887,7 @@ struct SubkeyBindingInfo {
     version: u8,
     created_at: u32,
     public_key_algorithm: String,
+    public_params: PublicParamsInfo,
     packet_version: PgpPacketHeaderVersion,
     signatures: Vec<SignatureInfo>,
 }
@@ -2632,6 +2922,12 @@ impl SubkeyBindingInfo {
     #[getter]
     fn public_key_algorithm(&self) -> String {
         self.public_key_algorithm.clone()
+    }
+
+    /// Structured algorithm-specific public-key metadata from `KeyDetails.public_params()`.
+    #[getter]
+    fn public_params(&self) -> PublicParamsInfo {
+        self.public_params.clone()
     }
 
     /// The RFC 9580 packet-header framing used by this subkey packet.
@@ -3262,6 +3558,7 @@ fn _openpgp(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<UserAttribute>()?;
     module.add_class::<UserAttributeBindingInfo>()?;
     module.add_class::<FeaturesInfo>()?;
+    module.add_class::<PublicParamsInfo>()?;
     module.add_class::<SubkeyBindingInfo>()?;
     module.add_class::<UserBindingInfo>()?;
     module.add_class::<SignatureInfo>()?;

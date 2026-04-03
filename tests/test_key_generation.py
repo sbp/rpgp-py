@@ -266,6 +266,115 @@ def test_generated_key_details_expose_version_algorithm_and_creation_time(
     assert reparsed_public_binding.public_key_algorithm == "x25519"
 
 
+@pytest.mark.parametrize("version", [4, 6])
+def test_generated_ecdsa_and_ecdh_public_params_expose_curve_metadata(
+    version: KeyVersion,
+) -> None:
+    """Expose `KeyDetails.public_params()` metadata for generated P-256 keys."""
+
+    secret_key = (
+        SecretKeyParamsBuilder()
+        .version(version)
+        .created_at(FIXED_PRIMARY_CREATED_AT)
+        .key_type(KeyType.ecdsa("p256"))
+        .can_certify(True)
+        .can_sign(True)
+        .primary_user_id("alice")
+        .subkey(
+            SubkeyParamsBuilder()
+            .version(version)
+            .created_at(FIXED_SUBKEY_CREATED_AT)
+            .key_type(KeyType.ecdh("p256"))
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+        .build()
+        .generate()
+    )
+    public_key = secret_key.to_public_key()
+
+    for key in (secret_key, public_key):
+        params = key.public_params
+        assert params.kind == "ecdsa"
+        assert params.curve == "p256"
+        assert params.is_supported is True
+        assert params.curve_bits == 256
+        assert params.secret_key_length == 32
+        assert params.kdf_hash_algorithm is None
+        assert params.kdf_symmetric_algorithm is None
+        assert params.kdf_type is None
+
+    for binding in (secret_key.subkey_bindings()[0], public_key.subkey_bindings()[0]):
+        params = binding.public_params
+        assert params.kind == "ecdh"
+        assert params.curve == "p256"
+        assert params.is_supported is True
+        assert params.curve_bits == 256
+        assert params.secret_key_length == 32
+        assert params.kdf_hash_algorithm == "sha256"
+        assert params.kdf_symmetric_algorithm == "aes128"
+
+    reparsed_secret, _ = SecretKey.from_armor(secret_key.to_armored())
+    reparsed_public, _ = PublicKey.from_armor(public_key.to_armored())
+
+    assert reparsed_secret.public_params.curve == "p256"
+    assert reparsed_public.public_params.curve == "p256"
+    assert reparsed_secret.subkey_bindings()[0].public_params.curve == "p256"
+    assert reparsed_public.subkey_bindings()[0].public_params.curve == "p256"
+
+
+def test_legacy_curve25519_public_params_expose_curve_metadata() -> None:
+    """The docs.rs legacy example should keep Ed25519 and Curve25519 metadata."""
+
+    secret_key = (
+        SecretKeyParamsBuilder()
+        .created_at(FIXED_PRIMARY_CREATED_AT)
+        .key_type(KeyType.ed25519_legacy())
+        .can_certify(False)
+        .can_sign(True)
+        .primary_user_id("Me <me@example.com>")
+        .preferred_symmetric_algorithms(["aes128"])
+        .preferred_hash_algorithms(["sha256"])
+        .preferred_compression_algorithms([])
+        .subkey(
+            SubkeyParamsBuilder()
+            .created_at(FIXED_SUBKEY_CREATED_AT)
+            .key_type(KeyType.ecdh("curve25519"))
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+        .build()
+        .generate()
+    )
+    public_key = secret_key.to_public_key()
+
+    for key in (secret_key, public_key):
+        params = key.public_params
+        assert params.kind == "eddsa-legacy"
+        assert params.curve == "ed25519"
+        assert params.is_supported is True
+        assert params.curve_bits == 256
+        assert params.secret_key_length == 32
+
+    for binding in (secret_key.subkey_bindings()[0], public_key.subkey_bindings()[0]):
+        params = binding.public_params
+        assert params.kind == "ecdh"
+        assert params.curve == "curve25519"
+        assert params.is_supported is True
+        assert params.secret_key_length == 32
+        assert params.kdf_hash_algorithm == "sha256"
+        assert params.kdf_symmetric_algorithm == "aes128"
+        assert params.kdf_type is not None
+
+    reparsed_secret, _ = SecretKey.from_armor(secret_key.to_armored())
+    reparsed_public, _ = PublicKey.from_armor(public_key.to_armored())
+
+    assert reparsed_secret.public_params.curve == "ed25519"
+    assert reparsed_public.public_params.curve == "ed25519"
+    assert reparsed_secret.subkey_bindings()[0].public_params.curve == "curve25519"
+    assert reparsed_public.subkey_bindings()[0].public_params.curve == "curve25519"
+
+
 def test_legacy_curve25519_key_details_expose_algorithm_categories() -> None:
     """The docs.rs legacy Curve25519 example exposes legacy and ECDH algorithm metadata."""
 
