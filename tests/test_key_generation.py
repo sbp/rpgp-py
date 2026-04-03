@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Final, Literal
+from typing import Final, Literal, NamedTuple
 
 import pytest
 
@@ -7,6 +7,7 @@ from openpgp import (
     EncryptionCaps,
     KeyType,
     Message,
+    PacketHeaderVersion,
     PublicKey,
     SecretKey,
     SecretKeyParamsBuilder,
@@ -46,6 +47,61 @@ AES256_ONLY: Final[list[SymmetricPreferenceName]] = ["aes256"]
 SHA512_ONLY: Final[list[HashPreferenceName]] = ["sha512"]
 ZLIB_ONLY: Final[list[CompressionPreferenceName]] = ["zlib"]
 JPEG_USER_ATTRIBUTE_DATA: Final[bytes] = bytes.fromhex("ffd8ffe000104a464946000101")
+
+
+class PacketHeaderInfo(NamedTuple):
+    tag: int
+    version: Literal["old", "new"]
+
+
+SECRET_KEY_TAG: Final[int] = 5
+PUBLIC_KEY_TAG: Final[int] = 6
+SECRET_SUBKEY_TAG: Final[int] = 7
+PUBLIC_SUBKEY_TAG: Final[int] = 14
+
+
+def parse_packet_headers(data: bytes) -> list[PacketHeaderInfo]:
+    """Parse fixed-length RFC 9580 packet headers from serialized key material."""
+
+    headers: list[PacketHeaderInfo] = []
+    offset = 0
+    while offset < len(data):
+        first_octet = data[offset]
+        assert first_octet & 0x80 == 0x80
+
+        if first_octet & 0x40:
+            tag = first_octet & 0x3F
+            length_octet = data[offset + 1]
+            if length_octet < 192:
+                header_len = 2
+                packet_len = length_octet
+            elif length_octet < 224:
+                header_len = 3
+                packet_len = ((length_octet - 192) << 8) + data[offset + 2] + 192
+            else:
+                assert length_octet == 255
+                header_len = 6
+                packet_len = int.from_bytes(data[offset + 2 : offset + 6], "big")
+            headers.append(PacketHeaderInfo(tag=tag, version="new"))
+        else:
+            tag = (first_octet >> 2) & 0x0F
+            length_type = first_octet & 0x03
+            if length_type == 0:
+                header_len = 2
+                packet_len = data[offset + 1]
+            elif length_type == 1:
+                header_len = 3
+                packet_len = int.from_bytes(data[offset + 1 : offset + 3], "big")
+            else:
+                assert length_type == 2
+                header_len = 5
+                packet_len = int.from_bytes(data[offset + 1 : offset + 5], "big")
+            headers.append(PacketHeaderInfo(tag=tag, version="old"))
+
+        offset += header_len + packet_len
+
+    assert offset == len(data)
+    return headers
 
 
 def build_modern_signing_key(version: KeyVersion) -> SecretKeyParamsBuilder:
@@ -816,3 +872,78 @@ def test_generate_passphrase_protected_key_supports_explicit_v6_aead_s2k() -> No
     encrypted = encrypt_message_to_recipient(b"secret", public_key)
     encrypted_message, _ = Message.from_armor(encrypted)
     assert encrypted_message.decrypt(reparsed_secret, "hello").payload_bytes() == b"secret"
+
+
+def test_packet_version_builder_controls_primary_and_subkey_packet_framing() -> None:
+    """Adapt the upstream packet-header version builder knobs into Python-visible bytes."""
+
+    secret_key = (
+        build_modern_signing_key(4)
+        .packet_version(PacketHeaderVersion.old())
+        .subkey(
+            SubkeyParamsBuilder()
+            .version(4)
+            .key_type(KeyType.x25519())
+            .packet_version(PacketHeaderVersion.new())
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+        .build()
+        .generate()
+    )
+
+    secret_headers = parse_packet_headers(secret_key.to_bytes())
+    public_headers = parse_packet_headers(secret_key.to_public_key().to_bytes())
+
+    assert [(header.tag, header.version) for header in secret_headers] == [
+        (SECRET_KEY_TAG, "old"),
+        (13, "new"),
+        (2, "new"),
+        (SECRET_SUBKEY_TAG, "new"),
+        (2, "new"),
+    ]
+    assert [(header.tag, header.version) for header in public_headers] == [
+        (PUBLIC_KEY_TAG, "old"),
+        (13, "new"),
+        (2, "new"),
+        (PUBLIC_SUBKEY_TAG, "new"),
+        (2, "new"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("expected_version", "packet_version"),
+    [("old", PacketHeaderVersion.old()), ("new", PacketHeaderVersion.new())],
+)
+def test_packet_version_roundtrips_through_secret_and_public_serialization(
+    expected_version: Literal["old", "new"],
+    packet_version: PacketHeaderVersion,
+) -> None:
+    """Packet framing should survive serialization and reparsing for generated certificates."""
+
+    secret_key = (
+        build_modern_signing_key(4)
+        .packet_version(packet_version)
+        .subkey(
+            SubkeyParamsBuilder()
+            .version(4)
+            .key_type(KeyType.x25519())
+            .packet_version(packet_version)
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+        .build()
+        .generate()
+    )
+
+    reparsed_secret = SecretKey.from_bytes(secret_key.to_bytes())
+    reparsed_public = PublicKey.from_bytes(secret_key.to_public_key().to_bytes())
+
+    assert [header.version for header in parse_packet_headers(reparsed_secret.to_bytes()) if header.tag in {SECRET_KEY_TAG, SECRET_SUBKEY_TAG}] == [
+        expected_version,
+        expected_version,
+    ]
+    assert [header.version for header in parse_packet_headers(reparsed_public.to_bytes()) if header.tag in {PUBLIC_KEY_TAG, PUBLIC_SUBKEY_TAG}] == [
+        expected_version,
+        expected_version,
+    ]

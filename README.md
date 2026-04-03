@@ -73,6 +73,7 @@ from openpgp import (
     EncryptionCaps,
     KeyType,
     Message,
+    PacketHeaderVersion,
     SecretKeyParamsBuilder,
     SubkeyParamsBuilder,
     UserAttribute,
@@ -86,6 +87,7 @@ secret_key = (
     .key_type(KeyType.ed25519())
     .can_certify(True)
     .can_sign(True)
+    .packet_version(PacketHeaderVersion.new())
     .feature_seipd_v2(True)
     .primary_user_id("Me <me@example.com>")
     .preferred_symmetric_algorithms(["aes256", "aes192", "aes128"])
@@ -96,6 +98,7 @@ secret_key = (
         SubkeyParamsBuilder()
         .version(6)
         .key_type(KeyType.x25519())
+        .packet_version(PacketHeaderVersion.new())
         .can_encrypt(EncryptionCaps.all())
         .build()
     )
@@ -135,6 +138,9 @@ encrypted = encrypt_message_to_recipient(b"secret", public_key)
 encrypted_message, _ = Message.from_armor(encrypted)
 assert encrypted_message.decrypt(secret_key).payload_bytes() == b"secret"
 ```
+
+Use `PacketHeaderVersion.old()` when you need legacy packet-header framing for the serialized
+primary-key or subkey packets, for example when round-tripping older transferable key material.
 
 ### Customize secret-key S2K protection for generated keys
 
@@ -201,7 +207,7 @@ assert subkey_s2k.string_to_key.kind == "iterated-salted"
 - Inspect certificate self-signature metadata, including direct-key signatures, user-ID binding signatures, key flags, features, and preferred algorithm lists.
 - Serialize keys back to binary packets or ASCII armor.
 - Generate new transferable secret/public keys with typed builder APIs based on rPGP's `SecretKeyParamsBuilder` and `SubkeyParamsBuilder`.
-- Configure key-generation parameters such as key versions, key flags, user IDs, user attributes, preferred algorithms, SEIPD feature flags, passphrase protection, explicit S2K protection parameters, and subkeys.
+- Configure key-generation parameters such as key versions, key flags, packet-header framing, user IDs, user attributes, preferred algorithms, SEIPD feature flags, passphrase protection, explicit S2K protection parameters, and subkeys.
 - Parse OpenPGP messages into reusable Python `Message` objects.
 - Inspect top-level message metadata and read signed, literal, or compressed payloads.
 - Decrypt encrypted messages to `DecryptedMessage` results using a secret key or password.

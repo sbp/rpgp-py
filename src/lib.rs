@@ -17,14 +17,16 @@ use pgp::{
     },
     packet::{
         DataMode, Features as PgpFeatures, ImageHeader as PgpImageHeader,
-        ImageHeaderV1 as PgpImageHeaderV1, KeyFlags as PgpKeyFlags, Signature, SignatureType,
-        SignatureVersion, SignatureVersionSpecific, UserAttribute as PgpUserAttribute,
-        UserAttributeType as PgpUserAttributeType,
+        ImageHeaderV1 as PgpImageHeaderV1, KeyFlags as PgpKeyFlags, PacketHeader, PacketTrait,
+        Signature, SignatureType, SignatureVersion, SignatureVersionSpecific,
+        UserAttribute as PgpUserAttribute, UserAttributeType as PgpUserAttributeType,
     },
     ser::Serialize,
     types::{
-        CompressionAlgorithm, KeyDetails, KeyVersion, Password, S2kParams as PgpS2kParams,
-        SecretParams as PgpSecretParams, StringToKey as PgpStringToKey, Timestamp,
+        CompressionAlgorithm, KeyDetails, KeyVersion,
+        PacketHeaderVersion as PgpPacketHeaderVersion, PacketLength, Password,
+        S2kParams as PgpS2kParams, SecretParams as PgpSecretParams, StringToKey as PgpStringToKey,
+        Tag, Timestamp,
     },
 };
 use pyo3::{
@@ -465,6 +467,91 @@ fn exact_or_random_vec(
     }
 }
 
+fn packet_header_from_body_len(
+    version: PgpPacketHeaderVersion,
+    tag: Tag,
+    body_len: usize,
+) -> PyResult<PacketHeader> {
+    let length = u32::try_from(body_len).map_err(to_py_err)?;
+    PacketHeader::from_parts(version, tag, PacketLength::Fixed(length)).map_err(to_py_err)
+}
+
+fn serialize_packet_body<T: Serialize>(packet: &T) -> PyResult<Vec<u8>> {
+    let mut body = Vec::new();
+    packet.to_writer(&mut body).map_err(to_py_err)?;
+    Ok(body)
+}
+
+fn reframe_secret_key_packet(
+    packet: pgp::packet::SecretKey,
+    version: PgpPacketHeaderVersion,
+) -> PyResult<pgp::packet::SecretKey> {
+    if packet.packet_header_version() == version {
+        return Ok(packet);
+    }
+
+    let body = serialize_packet_body(&packet)?;
+    let header = packet_header_from_body_len(version, Tag::SecretKey, body.len())?;
+    pgp::packet::SecretKey::try_from_reader(header, Cursor::new(body.as_slice())).map_err(to_py_err)
+}
+
+fn reframe_secret_subkey_packet(
+    packet: pgp::packet::SecretSubkey,
+    version: PgpPacketHeaderVersion,
+) -> PyResult<pgp::packet::SecretSubkey> {
+    if packet.packet_header_version() == version {
+        return Ok(packet);
+    }
+
+    let body = serialize_packet_body(&packet)?;
+    let header = packet_header_from_body_len(version, Tag::SecretSubkey, body.len())?;
+    pgp::packet::SecretSubkey::try_from_reader(header, Cursor::new(body.as_slice()))
+        .map_err(to_py_err)
+}
+
+#[derive(Clone)]
+struct KeyPacketVersions {
+    primary: PgpPacketHeaderVersion,
+    subkeys: Vec<PgpPacketHeaderVersion>,
+}
+
+fn apply_generated_key_packet_versions(
+    key: SignedSecretKey,
+    packet_versions: &KeyPacketVersions,
+) -> PyResult<SignedSecretKey> {
+    let SignedSecretKey {
+        primary_key,
+        details,
+        public_subkeys,
+        secret_subkeys,
+    } = key;
+
+    if secret_subkeys.len() != packet_versions.subkeys.len() {
+        return Err(to_py_err(format!(
+            "generated subkey count mismatch: expected {}, got {}",
+            packet_versions.subkeys.len(),
+            secret_subkeys.len(),
+        )));
+    }
+
+    let primary_key = reframe_secret_key_packet(primary_key, packet_versions.primary)?;
+    let secret_subkeys = secret_subkeys
+        .into_iter()
+        .zip(packet_versions.subkeys.iter().copied())
+        .map(|(mut subkey, version)| {
+            subkey.key = reframe_secret_subkey_packet(subkey.key, version)?;
+            Ok(subkey)
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+
+    Ok(SignedSecretKey {
+        primary_key,
+        details,
+        public_subkeys,
+        secret_subkeys,
+    })
+}
+
 fn s2k_params_from_secret_params(secret_params: &PgpSecretParams) -> PyS2kParams {
     let inner = match secret_params {
         PgpSecretParams::Plain(_) => PgpS2kParams::Unprotected,
@@ -731,6 +818,43 @@ macro_rules! encrypt_to_recipient {
             ));
         }
     }};
+}
+
+/// Packet-header framing for transferable key packets.
+///
+/// RFC 9580 distinguishes between the legacy "old" header format and the current "new" header
+/// format. rPGP exposes this via `types::PacketHeaderVersion`; the key builders use the selected
+/// value when serializing primary-key and subkey packets.
+#[pyclass(module = "openpgp", name = "PacketHeaderVersion")]
+#[derive(Clone, Copy)]
+struct PyPacketHeaderVersion {
+    inner: PgpPacketHeaderVersion,
+}
+
+#[pymethods]
+impl PyPacketHeaderVersion {
+    #[staticmethod]
+    fn old() -> Self {
+        Self {
+            inner: PgpPacketHeaderVersion::Old,
+        }
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "new")]
+    fn new_() -> Self {
+        Self {
+            inner: PgpPacketHeaderVersion::New,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let name = match self.inner {
+            PgpPacketHeaderVersion::Old => "old",
+            PgpPacketHeaderVersion::New => "new",
+        };
+        format!("PacketHeaderVersion.{name}()")
+    }
 }
 
 /// Key-flag configuration for encryption-capable OpenPGP keys.
@@ -1133,6 +1257,7 @@ impl PyS2kParams {
 #[derive(Clone)]
 struct SubkeyParams {
     inner: PgpSubkeyParams,
+    packet_version: PgpPacketHeaderVersion,
 }
 
 #[pymethods]
@@ -1147,6 +1272,7 @@ impl SubkeyParams {
 #[derive(Clone)]
 struct SubkeyParamsBuilder {
     inner: PgpSubkeyParamsBuilder,
+    packet_version: PgpPacketHeaderVersion,
 }
 
 #[pymethods]
@@ -1155,6 +1281,7 @@ impl SubkeyParamsBuilder {
     fn new() -> Self {
         Self {
             inner: PgpSubkeyParamsBuilder::default(),
+            packet_version: PgpPacketHeaderVersion::New,
         }
     }
 
@@ -1194,6 +1321,16 @@ impl SubkeyParamsBuilder {
         slf
     }
 
+    /// Select the RFC 9580 packet-header framing used when serializing this subkey packet.
+    fn packet_version<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        value: PyRef<'_, PyPacketHeaderVersion>,
+    ) -> PyRefMut<'py, Self> {
+        slf.packet_version = value.inner;
+        slf.inner.packet_version(value.inner);
+        slf
+    }
+
     fn passphrase<'py>(mut slf: PyRefMut<'py, Self>, value: Option<&str>) -> PyRefMut<'py, Self> {
         slf.inner.passphrase(value.map(str::to_owned));
         slf
@@ -1210,7 +1347,10 @@ impl SubkeyParamsBuilder {
 
     fn build(&self) -> PyResult<SubkeyParams> {
         let inner = self.inner.build().map_err(to_py_err)?;
-        Ok(SubkeyParams { inner })
+        Ok(SubkeyParams {
+            inner,
+            packet_version: self.packet_version,
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -1222,6 +1362,7 @@ impl SubkeyParamsBuilder {
 #[pyclass(module = "openpgp")]
 struct SecretKeyParams {
     inner: Mutex<Option<PgpSecretKeyParams>>,
+    packet_versions: KeyPacketVersions,
 }
 
 #[pymethods]
@@ -1234,6 +1375,7 @@ impl SecretKeyParams {
             .take()
             .ok_or_else(|| to_py_err("key parameters have already been consumed"))?;
         let inner = params.generate(rand::thread_rng()).map_err(to_py_err)?;
+        let inner = apply_generated_key_packet_versions(inner, &self.packet_versions)?;
         Ok(SecretKey { inner })
     }
 
@@ -1253,6 +1395,8 @@ impl SecretKeyParams {
 struct SecretKeyParamsBuilder {
     inner: PgpSecretKeyParamsBuilder,
     user_attributes: Vec<PgpUserAttribute>,
+    packet_version: PgpPacketHeaderVersion,
+    subkey_packet_versions: Vec<PgpPacketHeaderVersion>,
 }
 
 #[pymethods]
@@ -1262,6 +1406,8 @@ impl SecretKeyParamsBuilder {
         Self {
             inner: PgpSecretKeyParamsBuilder::default(),
             user_attributes: Vec::new(),
+            packet_version: PgpPacketHeaderVersion::New,
+            subkey_packet_versions: Vec::new(),
         }
     }
 
@@ -1303,6 +1449,16 @@ impl SecretKeyParamsBuilder {
 
     fn created_at<'py>(mut slf: PyRefMut<'py, Self>, value: u32) -> PyRefMut<'py, Self> {
         slf.inner.created_at(timestamp_from_seconds(value));
+        slf
+    }
+
+    /// Select the RFC 9580 packet-header framing used when serializing the primary key packet.
+    fn packet_version<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        value: PyRef<'_, PyPacketHeaderVersion>,
+    ) -> PyRefMut<'py, Self> {
+        slf.packet_version = value.inner;
+        slf.inner.packet_version(value.inner);
         slf
     }
 
@@ -1395,7 +1551,10 @@ impl SecretKeyParamsBuilder {
         mut slf: PyRefMut<'py, Self>,
         values: Vec<PyRef<'_, UserAttribute>>,
     ) -> PyRefMut<'py, Self> {
-        slf.user_attributes = values.into_iter().map(|value| value.inner.clone()).collect();
+        slf.user_attributes = values
+            .into_iter()
+            .map(|value| value.inner.clone())
+            .collect();
         slf
     }
 
@@ -1403,6 +1562,7 @@ impl SecretKeyParamsBuilder {
         mut slf: PyRefMut<'py, Self>,
         value: PyRef<'_, SubkeyParams>,
     ) -> PyRefMut<'py, Self> {
+        slf.subkey_packet_versions.push(value.packet_version);
         slf.inner.subkey(value.inner.clone());
         slf
     }
@@ -1413,6 +1573,10 @@ impl SecretKeyParamsBuilder {
         let inner = inner_builder.build().map_err(to_py_err)?;
         Ok(SecretKeyParams {
             inner: Mutex::new(Some(inner)),
+            packet_versions: KeyPacketVersions {
+                primary: self.packet_version,
+                subkeys: self.subkey_packet_versions.clone(),
+            },
         })
     }
 
@@ -2844,6 +3008,7 @@ fn encrypt_message_with_password(
 #[pymodule]
 fn _openpgp(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<EncryptionCaps>()?;
+    module.add_class::<PyPacketHeaderVersion>()?;
     module.add_class::<KeyType>()?;
     module.add_class::<PyStringToKey>()?;
     module.add_class::<PyS2kParams>()?;
