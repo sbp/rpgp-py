@@ -129,6 +129,10 @@ assert portrait_binding.user_attribute.image_format == "jpeg"
 assert portrait_binding.user_attribute.data == bytes.fromhex("ffd8ffe000104a464946000101")
 assert portrait_binding.signatures[0].signature_type == "cert-positive"
 
+subkey_binding = public_key.subkey_bindings()[0]
+assert subkey_binding.signatures[0].signature_type == "subkey-binding"
+assert subkey_binding.signatures[0].embedded_signature is None
+
 signed = sign_message(b"generated payload", secret_key)
 message, _ = Message.from_armor(signed)
 message.verify(public_key)
@@ -141,6 +145,9 @@ assert encrypted_message.decrypt(secret_key).payload_bytes() == b"secret"
 
 Use `PacketHeaderVersion.old()` when you need legacy packet-header framing for the serialized
 primary-key or subkey packets, for example when round-tripping older transferable key material.
+
+For signing-capable subkeys, `subkey_bindings()[0].signatures[0].embedded_signature` exposes the
+embedded primary-key-binding signature that RFC 9580 requires for back-signing.
 
 ### Customize secret-key S2K protection for generated keys
 
@@ -204,7 +211,7 @@ assert subkey_s2k.string_to_key.kind == "iterated-salted"
 - Parse ASCII-armored or binary transferable public keys.
 - Parse ASCII-armored or binary transferable secret keys.
 - Expose key metadata such as fingerprints, key IDs, subkey counts, user IDs, and secret-key S2K protection settings.
-- Inspect certificate self-signature metadata, including direct-key signatures, user-ID binding signatures, key flags, features, and preferred algorithm lists.
+- Inspect certificate self-signature metadata, including direct-key signatures, user-ID binding signatures, subkey binding signatures, embedded primary-key-binding signatures, key flags, features, and preferred algorithm lists.
 - Serialize keys back to binary packets or ASCII armor.
 - Generate new transferable secret/public keys with typed builder APIs based on rPGP's `SecretKeyParamsBuilder` and `SubkeyParamsBuilder`.
 - Configure key-generation parameters such as key versions, key flags, packet-header framing, user IDs, user attributes, preferred algorithms, SEIPD feature flags, passphrase protection, explicit S2K protection parameters, and subkeys.

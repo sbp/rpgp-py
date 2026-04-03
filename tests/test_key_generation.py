@@ -431,6 +431,91 @@ def test_signing_capable_subkey_generation_verifies_bindings() -> None:
     public_key.verify_bindings()
 
 
+def test_signing_capable_subkey_bindings_expose_embedded_primary_key_binding() -> None:
+    """Adapt upstream `signing_capable_subkey` to Python-visible subkey binding metadata."""
+
+    secret_key = (
+        SecretKeyParamsBuilder()
+        .version(6)
+        .key_type(KeyType.ed25519())
+        .can_certify(True)
+        .primary_user_id("alice")
+        .subkey(
+            SubkeyParamsBuilder()
+            .version(6)
+            .key_type(KeyType.ed25519())
+            .can_sign(True)
+            .build()
+        )
+        .build()
+        .generate()
+    )
+    public_key = secret_key.to_public_key()
+
+    secret_binding = secret_key.subkey_bindings()[0]
+    public_binding = public_key.subkey_bindings()[0]
+
+    assert secret_binding.fingerprint == public_binding.fingerprint
+    assert secret_binding.key_id == public_binding.key_id
+
+    secret_signature = secret_binding.signatures[0]
+    public_signature = public_binding.signatures[0]
+    assert secret_signature.signature_type == "subkey-binding"
+    assert public_signature.signature_type == "subkey-binding"
+    assert secret_signature.key_flags.sign is True
+    assert public_signature.key_flags.sign is True
+
+    secret_embedded = secret_signature.embedded_signature
+    public_embedded = public_signature.embedded_signature
+    assert secret_embedded is not None
+    assert public_embedded is not None
+    assert secret_embedded.signature_type == "primary-key-binding"
+    assert public_embedded.signature_type == "primary-key-binding"
+
+    reparsed_secret, _ = SecretKey.from_armor(secret_key.to_armored())
+    reparsed_public, _ = PublicKey.from_armor(public_key.to_armored())
+    assert (
+        reparsed_secret.subkey_bindings()[0].signatures[0].embedded_signature
+        is not None
+    )
+    assert (
+        reparsed_public.subkey_bindings()[0].signatures[0].embedded_signature
+        is not None
+    )
+
+
+def test_encryption_subkey_bindings_expose_key_flags_without_embedded_signature() -> None:
+    """Encryption subkey bindings expose key flags without a back-signature."""
+
+    secret_key = (
+        build_modern_signing_key(6)
+        .subkey(
+            SubkeyParamsBuilder()
+            .version(6)
+            .key_type(KeyType.x25519())
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+        .build()
+        .generate()
+    )
+    public_key = secret_key.to_public_key()
+
+    secret_signature = secret_key.subkey_bindings()[0].signatures[0]
+    public_signature = public_key.subkey_bindings()[0].signatures[0]
+
+    assert secret_signature.signature_type == "subkey-binding"
+    assert public_signature.signature_type == "subkey-binding"
+    assert secret_signature.key_flags.sign is False
+    assert public_signature.key_flags.sign is False
+    assert secret_signature.key_flags.encrypt_communications is True
+    assert public_signature.key_flags.encrypt_communications is True
+    assert secret_signature.key_flags.encrypt_storage is True
+    assert public_signature.key_flags.encrypt_storage is True
+    assert secret_signature.embedded_signature is None
+    assert public_signature.embedded_signature is None
+
+
 def build_certificate_metadata_key(
     version: KeyVersion,
     *,

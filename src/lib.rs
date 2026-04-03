@@ -6,8 +6,9 @@ use pgp::{
         DetachedSignature as PgpDetachedSignature, DsaKeySize as PgpDsaKeySize,
         EncryptionCaps as PgpEncryptionCaps, FullSignaturePacket, KeyType as PgpKeyType,
         Message as PgpMessage, MessageBuilder, SecretKeyParams as PgpSecretKeyParams,
-        SecretKeyParamsBuilder as PgpSecretKeyParamsBuilder, SignedPublicKey, SignedSecretKey,
-        SubkeyParams as PgpSubkeyParams, SubkeyParamsBuilder as PgpSubkeyParamsBuilder,
+        SecretKeyParamsBuilder as PgpSecretKeyParamsBuilder, SignedPublicKey, SignedPublicSubKey,
+        SignedSecretKey, SignedSecretSubKey, SubkeyParams as PgpSubkeyParams,
+        SubkeyParamsBuilder as PgpSubkeyParamsBuilder,
     },
     crypto::{
         aead::{AeadAlgorithm, ChunkSize},
@@ -664,6 +665,9 @@ fn signature_info_from_signature(signature: &Signature, is_one_pass: bool) -> Si
         preferred_aead_algorithms: aead_algorithm_preference_names(signature.preferred_aead_algs()),
         key_flags: key_flags_info_from_key_flags(&key_flags),
         features: signature.features().map(features_info_from_features),
+        embedded_signature: signature
+            .embedded_signature()
+            .map(|embedded| Box::new(signature_info_from_signature(embedded, false))),
         is_one_pass,
     }
 }
@@ -728,6 +732,30 @@ fn user_attribute_binding_infos_from_details(
         .iter()
         .map(user_attribute_binding_info_from_signed_user_attribute)
         .collect::<Vec<_>>()
+}
+
+fn subkey_binding_info_from_signed_public_subkey(subkey: &SignedPublicSubKey) -> SubkeyBindingInfo {
+    SubkeyBindingInfo {
+        fingerprint: subkey.key.fingerprint().to_string(),
+        key_id: subkey.key.legacy_key_id().to_string(),
+        signatures: subkey
+            .signatures
+            .iter()
+            .map(|signature| signature_info_from_signature(signature, false))
+            .collect::<Vec<_>>(),
+    }
+}
+
+fn subkey_binding_info_from_signed_secret_subkey(subkey: &SignedSecretSubKey) -> SubkeyBindingInfo {
+    SubkeyBindingInfo {
+        fingerprint: subkey.key.public_key().fingerprint().to_string(),
+        key_id: subkey.key.public_key().legacy_key_id().to_string(),
+        signatures: subkey
+            .signatures
+            .iter()
+            .map(|signature| signature_info_from_signature(signature, false))
+            .collect::<Vec<_>>(),
+    }
 }
 
 #[derive(Clone)]
@@ -1657,6 +1685,15 @@ impl PublicKey {
         user_attribute_binding_infos_from_details(&self.inner.details)
     }
 
+    /// Return public subkeys together with their binding-signature metadata.
+    fn subkey_bindings(&self) -> Vec<SubkeyBindingInfo> {
+        self.inner
+            .public_subkeys
+            .iter()
+            .map(subkey_binding_info_from_signed_public_subkey)
+            .collect::<Vec<_>>()
+    }
+
     /// Verify the certificate's self-signatures and subkey binding signatures.
     fn verify_bindings(&self) -> PyResult<()> {
         self.inner.verify_bindings().map_err(to_py_err)
@@ -1763,6 +1800,15 @@ impl SecretKey {
     /// Return user attributes together with their certification self-signatures.
     fn user_attribute_bindings(&self) -> Vec<UserAttributeBindingInfo> {
         user_attribute_binding_infos_from_details(&self.inner.details)
+    }
+
+    /// Return secret subkeys together with their binding-signature metadata.
+    fn subkey_bindings(&self) -> Vec<SubkeyBindingInfo> {
+        self.inner
+            .secret_subkeys
+            .iter()
+            .map(subkey_binding_info_from_signed_secret_subkey)
+            .collect::<Vec<_>>()
     }
 
     /// Return the primary secret key packet's RFC 9580 S2K protection parameters.
@@ -2428,6 +2474,45 @@ impl FeaturesInfo {
     }
 }
 
+/// A subkey and its attached binding or revocation signatures.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+struct SubkeyBindingInfo {
+    fingerprint: String,
+    key_id: String,
+    signatures: Vec<SignatureInfo>,
+}
+
+#[pymethods]
+impl SubkeyBindingInfo {
+    /// The RFC 9580 fingerprint of the subkey packet.
+    #[getter]
+    fn fingerprint(&self) -> String {
+        self.fingerprint.clone()
+    }
+
+    /// The legacy key identifier of the subkey packet.
+    #[getter]
+    fn key_id(&self) -> String {
+        self.key_id.clone()
+    }
+
+    /// Metadata for every binding or revocation signature attached to this subkey.
+    #[getter]
+    fn signatures(&self) -> Vec<SignatureInfo> {
+        self.signatures.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SubkeyBindingInfo(fingerprint='{}', key_id='{}', signature_count={})",
+            self.fingerprint,
+            self.key_id,
+            self.signatures.len()
+        )
+    }
+}
+
 /// A user ID and its attached certification self-signatures.
 #[pyclass(module = "openpgp")]
 #[derive(Clone)]
@@ -2492,6 +2577,7 @@ struct SignatureInfo {
     preferred_aead_algorithms: Vec<(String, String)>,
     key_flags: KeyFlagsInfo,
     features: Option<FeaturesInfo>,
+    embedded_signature: Option<Box<SignatureInfo>>,
     is_one_pass: bool,
 }
 
@@ -2597,6 +2683,12 @@ impl SignatureInfo {
     #[getter]
     fn features(&self) -> Option<FeaturesInfo> {
         self.features
+    }
+
+    /// An embedded signature, such as the primary-key binding on a signing-capable subkey.
+    #[getter]
+    fn embedded_signature(&self) -> Option<SignatureInfo> {
+        self.embedded_signature.as_deref().cloned()
     }
 
     /// Whether the signature originated from a one-pass signature packet.
@@ -3024,6 +3116,7 @@ fn _openpgp(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<UserAttribute>()?;
     module.add_class::<UserAttributeBindingInfo>()?;
     module.add_class::<FeaturesInfo>()?;
+    module.add_class::<SubkeyBindingInfo>()?;
     module.add_class::<UserBindingInfo>()?;
     module.add_class::<SignatureInfo>()?;
     module.add_class::<DetachedSignature>()?;
