@@ -1297,8 +1297,12 @@ def test_packet_version_is_exposed_on_keys_and_subkey_bindings(
     assert public_key.packet_version.name == expected_primary_version
     assert secret_key.subkey_bindings()[0].packet_version == subkey_packet_version
     assert public_key.subkey_bindings()[0].packet_version == subkey_packet_version
-    assert secret_key.subkey_bindings()[0].packet_version.name == expected_subkey_version
-    assert public_key.subkey_bindings()[0].packet_version.name == expected_subkey_version
+    assert (
+        secret_key.subkey_bindings()[0].packet_version.name == expected_subkey_version
+    )
+    assert (
+        public_key.subkey_bindings()[0].packet_version.name == expected_subkey_version
+    )
 
     reparsed_secret = SecretKey.from_bytes(secret_key.to_bytes())
     reparsed_public = PublicKey.from_bytes(public_key.to_bytes())

@@ -1,6 +1,6 @@
 from typing import Dict, List, Literal, Optional, Tuple, TypeAlias
 
-Headers = Dict[str, List[str]]
+Headers: TypeAlias = Dict[str, List[str]]
 SymmetricAlgorithmName: TypeAlias = Literal["aes128", "aes192", "aes256"]
 AeadAlgorithmName: TypeAlias = Literal["eax", "ocb", "gcm"]
 CompressionAlgorithmName: TypeAlias = Literal["zip", "zlib", "bzip2"]
@@ -188,7 +188,7 @@ class S2kParams:
 
 
 class SubkeyParams:
-    pass
+    ...
 
 
 class SubkeyParamsBuilder:

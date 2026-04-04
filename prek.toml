@@ -9,7 +9,7 @@ hooks = [
   {
     id = "ruff",
     name = "ruff",
-    files = "^brave_api|^tests|^examples|^docs",
+    files = "^src|^tests",
     args = ["--fix"]
   },
   {
