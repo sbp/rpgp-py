@@ -62,7 +62,6 @@ PUBLIC_SUBKEY_TAG: Final[int] = 14
 
 def parse_packet_headers(data: bytes) -> list[PacketHeaderInfo]:
     """Parse fixed-length RFC 9580 packet headers from serialized key material."""
-
     headers: list[PacketHeaderInfo] = []
     offset = 0
     while offset < len(data):
@@ -106,7 +105,6 @@ def parse_packet_headers(data: bytes) -> list[PacketHeaderInfo]:
 
 def build_modern_signing_key(version: KeyVersion) -> SecretKeyParamsBuilder:
     """Adapted from upstream builder.rs `key_gen_25519_rfc9580_short`."""
-
     return (
         SecretKeyParamsBuilder()
         .version(version)
@@ -123,7 +121,6 @@ def build_modern_signing_key(version: KeyVersion) -> SecretKeyParamsBuilder:
 @pytest.mark.parametrize("version", [4, 6])
 def test_generate_ed25519_x25519_key_roundtrips(version: KeyVersion) -> None:
     """Adapt upstream short key-generation coverage for RFC 9580 25519 keys."""
-
     secret_key = (
         build_modern_signing_key(version)
         .subkey(
@@ -169,7 +166,6 @@ def test_generate_ed25519_x25519_key_roundtrips(version: KeyVersion) -> None:
 
 def test_generate_legacy_curve25519_key_matches_docs_example() -> None:
     """Adapt the docs.rs composed-module example for legacy Curve25519 generation."""
-
     secret_key = (
         SecretKeyParamsBuilder()
         .key_type(KeyType.ed25519_legacy())
@@ -204,7 +200,6 @@ def test_generate_legacy_curve25519_key_matches_docs_example() -> None:
 @pytest.mark.parametrize("version", [4, 6])
 def test_generate_ecdsa_p256_ecdh_p256_key_roundtrips(version: KeyVersion) -> None:
     """Adapt upstream `key_gen_ecdsa_p256_*` coverage into Python bindings."""
-
     secret_key = (
         SecretKeyParamsBuilder()
         .version(version)
@@ -234,7 +229,6 @@ def test_generate_ecdsa_p256_ecdh_p256_key_roundtrips(version: KeyVersion) -> No
 
 def test_generate_passphrase_protected_key_requires_password_for_signing() -> None:
     """Adapt the encrypted-key generation flow from upstream builder tests."""
-
     protected_key = (
         build_modern_signing_key(6)
         .passphrase("hello")
@@ -340,7 +334,6 @@ def test_builder_validation_errors_are_exposed_to_python(
     match: str,
 ) -> None:
     """Adapt upstream builder validation failures into Python exceptions."""
-
     with pytest.raises(ValueError, match=match):
         builder().build()
 
@@ -405,7 +398,6 @@ def test_key_type_capability_helpers_match_upstream_semantics() -> None:
 
 def test_signing_capable_subkey_generation_verifies_bindings() -> None:
     """Adapt upstream `signing_capable_subkey` coverage with Python-visible assertions."""
-
     secret_key = (
         SecretKeyParamsBuilder()
         .version(6)
@@ -433,7 +425,6 @@ def test_signing_capable_subkey_generation_verifies_bindings() -> None:
 
 def test_signing_capable_subkey_bindings_expose_embedded_primary_key_binding() -> None:
     """Adapt upstream `signing_capable_subkey` to Python-visible subkey binding metadata."""
-
     secret_key = (
         SecretKeyParamsBuilder()
         .version(6)
@@ -484,9 +475,10 @@ def test_signing_capable_subkey_bindings_expose_embedded_primary_key_binding() -
     )
 
 
-def test_encryption_subkey_bindings_expose_key_flags_without_embedded_signature() -> None:
+def test_encryption_subkey_bindings_expose_key_flags_without_embedded_signature() -> (
+    None
+):
     """Encryption subkey bindings expose key flags without a back-signature."""
-
     secret_key = (
         build_modern_signing_key(6)
         .subkey(
@@ -524,7 +516,6 @@ def build_certificate_metadata_key(
     feature_seipd_v2: bool = False,
 ) -> SecretKey:
     """Adapt upstream certificate-metadata builder coverage into reusable helpers."""
-
     builder = (
         SecretKeyParamsBuilder()
         .version(version)
@@ -557,7 +548,6 @@ def assert_certificate_preferences_are_exposed_on_signature(
     seipd_v2: bool,
 ) -> None:
     """Assert the self-signature metadata surfaced from upstream certificate builders."""
-
     assert info.preferred_symmetric_algorithms == ["aes256"]
     assert info.preferred_hash_algorithms == ["sha512"]
     assert info.preferred_compression_algorithms == ["zlib"]
@@ -578,7 +568,6 @@ def assert_certificate_preferences_are_exposed_on_signature(
 
 def test_v4_certificate_metadata_is_exposed_on_primary_user_binding_signature() -> None:
     """Adapt upstream `test_cert_metadata_gen_v4_v4` into Python-visible metadata access."""
-
     secret_key = build_certificate_metadata_key(4, primary_user_id="alice")
     public_key = secret_key.to_public_key()
 
@@ -619,7 +608,6 @@ def test_v4_certificate_metadata_is_exposed_on_primary_user_binding_signature() 
 
 def test_v6_certificate_metadata_moves_to_direct_key_signature() -> None:
     """Adapt upstream `test_cert_metadata_gen_v6_v6` into Python-visible metadata access."""
-
     secret_key = build_certificate_metadata_key(
         6,
         primary_user_id="alice",
@@ -675,7 +663,6 @@ def test_v6_certificate_metadata_moves_to_direct_key_signature() -> None:
 
 def test_v6_id_less_certificate_still_exposes_direct_key_signature_metadata() -> None:
     """Adapt upstream `test_cert_metadata_gen_v6_v6_id_less` into Python-visible metadata access."""
-
     secret_key = build_certificate_metadata_key(
         6,
         primary_user_id=None,
@@ -707,7 +694,6 @@ def test_v6_id_less_certificate_still_exposes_direct_key_signature_metadata() ->
 
 def test_user_attribute_image_packets_roundtrip_from_builder() -> None:
     """Adapt upstream `UserAttribute::new_image` behavior into builder coverage."""
-
     portrait = UserAttribute.image_jpeg(JPEG_USER_ATTRIBUTE_DATA)
 
     secret_key = build_modern_signing_key(4).user_attribute(portrait).build().generate()
@@ -748,7 +734,6 @@ def test_user_attribute_image_packets_roundtrip_from_builder() -> None:
 @pytest.mark.parametrize("version", [4, 6])
 def test_user_attribute_sequence_builder_preserves_order(version: KeyVersion) -> None:
     """Adapt upstream builder list semantics for user-attribute sequences."""
-
     first = UserAttribute.image_jpeg(bytes.fromhex("ffd8ffdb00"))
     second = UserAttribute.image_jpeg(bytes.fromhex("ffd8ffee010203"))
 
@@ -774,7 +759,6 @@ def test_user_attribute_sequence_builder_preserves_order(version: KeyVersion) ->
 
 def test_s2k_params_reject_argon2_with_cfb_usage() -> None:
     """RFC 9580 forbids Argon2 S2K outside AEAD usage modes."""
-
     with pytest.raises(
         ValueError,
         match="Argon2 String-to-Key may only be used with AEAD S2K parameters",
@@ -784,7 +768,6 @@ def test_s2k_params_reject_argon2_with_cfb_usage() -> None:
 
 def test_generate_passphrase_protected_key_supports_explicit_v4_cfb_s2k() -> None:
     """Adapt upstream secret-key S2K coverage to the builder API for V4 keys."""
-
     primary_s2k = S2kParams.cfb(
         "aes256",
         StringToKey.iterated(
@@ -874,7 +857,6 @@ def test_generate_passphrase_protected_key_supports_explicit_v4_cfb_s2k() -> Non
 
 def test_generate_passphrase_protected_key_supports_explicit_v6_aead_s2k() -> None:
     """Adapt upstream Argon2-based S2K docs to explicit V6 builder control."""
-
     primary_s2k = S2kParams.aead(
         "aes256",
         "ocb",
@@ -972,7 +954,6 @@ def test_generate_passphrase_protected_key_supports_explicit_v6_aead_s2k() -> No
 
 def test_packet_version_builder_controls_primary_and_subkey_packet_framing() -> None:
     """Adapt the upstream packet-header version builder knobs into Python-visible bytes."""
-
     secret_key = (
         build_modern_signing_key(4)
         .packet_version(PacketHeaderVersion.old())
@@ -1016,7 +997,6 @@ def test_packet_version_roundtrips_through_secret_and_public_serialization(
     packet_version: PacketHeaderVersion,
 ) -> None:
     """Packet framing should survive serialization and reparsing for generated certificates."""
-
     secret_key = (
         build_modern_signing_key(4)
         .packet_version(packet_version)

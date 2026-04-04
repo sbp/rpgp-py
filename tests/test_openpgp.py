@@ -235,7 +235,6 @@ def test_decrypted_signed_openpgp_interop_message_supports_signature_verificatio
     case_name: str,
 ) -> None:
     """Adapt upstream decrypt+verify coverage from rpgp/tests/message_test.rs."""
-
     case = read_fixture_json(f"openpgp-interop/{case_name}.json")
     secret_key, _ = SecretKey.from_armor(
         read_fixture_text(f"openpgp-interop/{case['decryptKey']}")
