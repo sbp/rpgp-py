@@ -24,9 +24,62 @@ CurveName: TypeAlias = Literal[
     "brainpoolp512r1",
     "secp256k1",
 ]
+EccCurveName: TypeAlias = Literal[
+    "curve25519",
+    "ed25519",
+    "p256",
+    "p384",
+    "p521",
+    "brainpoolp256r1",
+    "brainpoolp384r1",
+    "brainpoolp512r1",
+    "secp256k1",
+]
 DsaKeySizeBits: TypeAlias = Literal[1024, 2048, 3072]
 KeyVersionNumber: TypeAlias = Literal[4, 6]
 AeadPreference: TypeAlias = Tuple[SymmetricAlgorithmName, AeadAlgorithmName]
+PacketHeaderVersionName: TypeAlias = Literal["old", "new"]
+PublicKeyAlgorithmName: TypeAlias = Literal[
+    "rsa",
+    "rsa-encrypt",
+    "rsa-sign",
+    "elgamal-encrypt",
+    "dsa",
+    "ecdh",
+    "ecdsa",
+    "elgamal",
+    "diffie-hellman",
+    "eddsa-legacy",
+    "x25519",
+    "x448",
+    "ed25519",
+    "ed448",
+    "private-100",
+    "private-101",
+    "private-102",
+    "private-103",
+    "private-104",
+    "private-105",
+    "private-106",
+    "private-107",
+    "private-108",
+    "private-109",
+    "private-110",
+    "unknown",
+]
+PublicParamsKindName: TypeAlias = Literal[
+    "rsa",
+    "dsa",
+    "ecdsa",
+    "ecdh",
+    "elgamal",
+    "eddsa-legacy",
+    "ed25519",
+    "x25519",
+    "x448",
+    "ed448",
+    "unknown",
+]
 
 
 class PacketHeaderVersion:
@@ -34,6 +87,8 @@ class PacketHeaderVersion:
     def old() -> PacketHeaderVersion: ...
     @staticmethod
     def new() -> PacketHeaderVersion: ...
+    @property
+    def name(self) -> PacketHeaderVersionName: ...
 
 
 class EncryptionCaps:
@@ -203,6 +258,29 @@ class SecretKeyParamsBuilder:
     def generate(self) -> SecretKey: ...
 
 
+class PublicParamsInfo:
+    @property
+    def kind(self) -> PublicParamsKindName: ...
+    @property
+    def curve(self) -> Optional[EccCurveName]: ...
+    @property
+    def curve_oid(self) -> Optional[str]: ...
+    @property
+    def curve_alias(self) -> Optional[str]: ...
+    @property
+    def curve_bits(self) -> Optional[int]: ...
+    @property
+    def secret_key_length(self) -> Optional[int]: ...
+    @property
+    def is_supported(self) -> Optional[bool]: ...
+    @property
+    def kdf_hash_algorithm(self) -> Optional[HashAlgorithmName]: ...
+    @property
+    def kdf_symmetric_algorithm(self) -> Optional[SymmetricAlgorithmName]: ...
+    @property
+    def kdf_type(self) -> Optional[str]: ...
+
+
 class PublicKey:
     @staticmethod
     def from_armor(data: str) -> Tuple[PublicKey, Headers]: ...
@@ -212,6 +290,16 @@ class PublicKey:
     def fingerprint(self) -> str: ...
     @property
     def key_id(self) -> str: ...
+    @property
+    def version(self) -> int: ...
+    @property
+    def created_at(self) -> int: ...
+    @property
+    def public_key_algorithm(self) -> PublicKeyAlgorithmName: ...
+    @property
+    def public_params(self) -> PublicParamsInfo: ...
+    @property
+    def packet_version(self) -> PacketHeaderVersion: ...
     @property
     def public_subkey_count(self) -> int: ...
     @property
@@ -234,6 +322,16 @@ class SecretKey:
     def fingerprint(self) -> str: ...
     @property
     def key_id(self) -> str: ...
+    @property
+    def version(self) -> int: ...
+    @property
+    def created_at(self) -> int: ...
+    @property
+    def public_key_algorithm(self) -> PublicKeyAlgorithmName: ...
+    @property
+    def public_params(self) -> PublicParamsInfo: ...
+    @property
+    def packet_version(self) -> PacketHeaderVersion: ...
     @property
     def public_subkey_count(self) -> int: ...
     @property
@@ -294,6 +392,16 @@ class SubkeyBindingInfo:
     def fingerprint(self) -> str: ...
     @property
     def key_id(self) -> str: ...
+    @property
+    def version(self) -> int: ...
+    @property
+    def created_at(self) -> int: ...
+    @property
+    def public_key_algorithm(self) -> PublicKeyAlgorithmName: ...
+    @property
+    def public_params(self) -> PublicParamsInfo: ...
+    @property
+    def packet_version(self) -> PacketHeaderVersion: ...
     @property
     def signatures(self) -> List[SignatureInfo]: ...
 
