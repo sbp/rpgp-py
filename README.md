@@ -1,64 +1,101 @@
 # rpgp-py
 
-Python bindings for [`rpgp`](https://github.com/rpgp/rpgp), exposed as the `openpgp` Python package.
+Python bindings for [`rpgp`](https://github.com/rpgp/rpgp), exposed as the `openpgp` package.
 
-## Install
+`rpgp-py` aims to make the Rust [`pgp`](https://docs.rs/pgp/latest/pgp/) implementation feel natural from Python while keeping the parts that matter for production use:
+
+- modern OpenPGP support from the `rpgp`/`pgp` ecosystem, including RFC 9580-era functionality,
+- a typed Python surface (`.pyi` stubs ship with the package),
+- abi3 wheels for Python 3.10+,
+- high-level helpers for common signing/encryption workflows,
+- detailed inspection APIs for packets, signatures, key bindings, and generated key material.
+
+## Why use `rpgp-py` instead of `PGPy` or `PGPy13`?
+
+Broadly:
+
+- **Modern spec coverage:** `rpgp-py` follows the Rust `pgp` crate, which targets newer OpenPGP work such as RFC 9580-compatible v6 key material and modern curves/packet handling. `PGPy` and `PGPy13` are still fundamentally RFC 4880-era libraries.
+- **Rust core, Python ergonomics:** the cryptographic core is implemented in Rust and exposed through a Python-first API.
+- **Typed builders and inspectors:** the package exposes typed builders for key generation plus rich metadata for self-signatures, key flags, features, user bindings, S2K settings, and public-key parameters.
+- **Python 3.13 story:** `PGPy` still imports `imghdr`, which was removed from the standard library in Python 3.13. `PGPy13` exists as a compatibility fork; `rpgp-py` targets current Python directly.
+- **Interoperability focus:** the test suite is built around real OpenPGP fixtures, including upstream-style interoperability cases.
+
+## Installation
 
 ```bash
 uv sync
 ```
 
-## Build the extension locally
+To build the extension locally in editable mode:
 
 ```bash
 uv run maturin develop
 ```
 
-## Examples
+## Reference documentation
 
-### Parse, sign, encrypt, and inspect OpenPGP data
+When you need the underlying Rust semantics or want to compare behaviour against upstream docs, these are the most useful references:
+
+- [`rpgp` on GitHub](https://github.com/rpgp/rpgp)
+- [`pgp` crate API docs on docs.rs](https://docs.rs/pgp/latest/pgp/)
+- [RFC 9580](https://www.rfc-editor.org/rfc/rfc9580)
+
+## Main use cases
+
+### 1. Parse and inspect transferable keys
 
 ```python
-from openpgp import (
-    CleartextSignedMessage,
-    DetachedSignature,
-    Message,
-    PublicKey,
-    SecretKey,
-    SignatureInfo,
-    encrypt_message_to_recipient,
-    encrypt_message_with_password,
-    sign_cleartext_message,
-    sign_message,
-)
+from openpgp import PublicKey, SecretKey
 
 public_key, _ = PublicKey.from_armor(public_key_armor)
 public_key.verify_bindings()
 
 secret_key, _ = SecretKey.from_armor(secret_key_armor)
 assert secret_key.to_public_key().fingerprint == public_key.fingerprint
+assert public_key.public_subkey_count >= 0
+assert secret_key.secret_subkey_count >= 0
+```
 
-signed_message = sign_message(b"hello world", secret_key)
-message, _ = Message.from_armor(signed_message)
+This is the core entry point when you want to inspect fingerprints, key IDs, OpenPGP key versions, user IDs, subkeys, self-signatures, or packet-level metadata.
+
+### 2. Sign and verify messages and detached signatures
+
+```python
+from openpgp import DetachedSignature, Message, sign_message
+
+signed = sign_message(b"hello world", secret_key)
+message, _ = Message.from_armor(signed)
 message.verify(public_key)
 assert message.payload_text() == "hello world"
 
 signature = DetachedSignature.sign_binary(b"hello world", secret_key)
+signature.verify(public_key, b"hello world")
 info = signature.signature_info()
 assert info.signature_type == "binary"
-signature.verify(public_key, b"hello world")
+assert info.hash_algorithm == "SHA256"
+```
 
-cleartext = sign_cleartext_message("hello\n-world\n", secret_key)
-cleartext_message, _ = CleartextSignedMessage.from_armor(cleartext)
-assert "Hash: SHA256" in cleartext
-assert cleartext_message.signed_text() == "hello\r\n-world\r\n"
-assert cleartext_message.signature_count() == 1
-assert cleartext_message.signature_infos()[0].hash_algorithm == "SHA256"
+For inline or detached signatures, `SignatureInfo` exposes the signature packet metadata that is often needed for debugging or auditing.
 
-password_encrypted = encrypt_message_with_password(b"secret", "hunter2")
-encrypted_message, _ = Message.from_armor(password_encrypted)
-decrypted = encrypted_message.decrypt_with_password("hunter2")
-assert decrypted.payload_text() == "secret"
+### 3. Work with cleartext signatures
+
+```python
+from openpgp import CleartextSignedMessage, sign_cleartext_message
+
+armored = sign_cleartext_message("hello\n-world\n", secret_key)
+message, _ = CleartextSignedMessage.from_armor(armored)
+
+assert message.signed_text() == "hello\r\n-world\r\n"
+assert message.signature_count() == 1
+message.verify(public_key)
+```
+
+### 4. Encrypt and decrypt OpenPGP messages
+
+Recipient encryption:
+
+```python
+from openpgp import Message, encrypt_message_to_recipient
 
 recipient_encrypted = encrypt_message_to_recipient(b"secret", public_key)
 recipient_message, _ = Message.from_armor(recipient_encrypted)
@@ -66,7 +103,18 @@ recipient_decrypted = recipient_message.decrypt(secret_key)
 assert recipient_decrypted.payload_bytes() == b"secret"
 ```
 
-### Generate RFC 9580-compatible key material with builder APIs
+Password encryption:
+
+```python
+from openpgp import Message, encrypt_message_with_password
+
+password_encrypted = encrypt_message_with_password(b"secret", "hunter2")
+password_message, _ = Message.from_armor(password_encrypted)
+password_decrypted = password_message.decrypt_with_password("hunter2")
+assert password_decrypted.payload_text() == "secret"
+```
+
+### 5. Generate modern RFC 9580-compatible key material
 
 ```python
 from openpgp import (
@@ -111,49 +159,12 @@ secret_key = (
 public_key = secret_key.to_public_key()
 secret_key.verify_bindings()
 public_key.verify_bindings()
+
 assert secret_key.version == 6
-assert secret_key.created_at == 1_700_000_000
-assert secret_key.public_key_algorithm == "ed25519"
-assert secret_key.packet_version == PacketHeaderVersion.new()
-assert public_key.version == 6
-assert public_key.created_at == 1_700_000_000
 assert public_key.public_key_algorithm == "ed25519"
 assert public_key.public_params.kind == "ed25519"
 assert public_key.public_params.curve == "ed25519"
-assert public_key.public_params.secret_key_length == 32
 assert public_key.packet_version == PacketHeaderVersion.new()
-assert public_key.packet_version.name == "new"
-
-direct_self_signature = public_key.direct_signature_infos()[0]
-assert direct_self_signature.signature_type == "direct-key"
-assert direct_self_signature.key_flags.certify is True
-assert direct_self_signature.key_flags.sign is True
-assert direct_self_signature.features is not None
-assert direct_self_signature.features.seipd_v2 is True
-assert direct_self_signature.preferred_hash_algorithms == ["sha256", "sha384", "sha512", "sha224"]
-
-user_binding = public_key.user_bindings()[0]
-assert user_binding.user_id == "Me <me@example.com>"
-assert user_binding.is_primary is True
-assert user_binding.signatures[0].signature_type == "cert-positive"
-
-portrait_binding = public_key.user_attribute_bindings()[0]
-assert portrait_binding.user_attribute.kind == "image"
-assert portrait_binding.user_attribute.image_format == "jpeg"
-assert portrait_binding.user_attribute.data == bytes.fromhex("ffd8ffe000104a464946000101")
-assert portrait_binding.signatures[0].signature_type == "cert-positive"
-
-subkey_binding = public_key.subkey_bindings()[0]
-assert subkey_binding.version == 6
-assert subkey_binding.created_at == 1_700_000_123
-assert subkey_binding.public_key_algorithm == "x25519"
-assert subkey_binding.public_params.kind == "x25519"
-assert subkey_binding.public_params.curve == "curve25519"
-assert subkey_binding.public_params.secret_key_length == 32
-assert subkey_binding.packet_version == PacketHeaderVersion.new()
-assert subkey_binding.packet_version.name == "new"
-assert subkey_binding.signatures[0].signature_type == "subkey-binding"
-assert subkey_binding.signatures[0].embedded_signature is None
 
 signed = sign_message(b"generated payload", secret_key)
 message, _ = Message.from_armor(signed)
@@ -165,20 +176,9 @@ encrypted_message, _ = Message.from_armor(encrypted)
 assert encrypted_message.decrypt(secret_key).payload_bytes() == b"secret"
 ```
 
-Use `PacketHeaderVersion.old()` when you need legacy packet-header framing for the serialized
-primary-key or subkey packets, for example when round-tripping older transferable key material.
-Generated keys and `subkey_bindings()` also expose the OpenPGP key `version`, `created_at`, and
-`public_key_algorithm` surfaced by rPGP's `KeyDetails` trait. The companion `public_params`
-property exposes algorithm-specific metadata from `KeyDetails.public_params()`, including ECC curve
-names, nominal bit lengths, supported/unsupported curve status, and ECDH KDF details when present.
-The separate `packet_version` property continues to describe old/new RFC 9580 packet-header
-framing, and `PacketHeaderVersion` values compare by value while also exposing `.name` for
-lightweight checks.
+Use `PacketHeaderVersion.old()` when you need legacy packet-header framing for round-tripping older transferable key material.
 
-For signing-capable subkeys, `subkey_bindings()[0].signatures[0].embedded_signature` exposes the
-embedded primary-key-binding signature that RFC 9580 requires for back-signing.
-
-### Customize secret-key S2K protection for generated keys
+### 6. Customize secret-key S2K protection for generated keys
 
 ```python
 from openpgp import (
@@ -228,32 +228,107 @@ assert primary_s2k.usage == "aead"
 assert primary_s2k.aead_algorithm == "ocb"
 assert primary_s2k.string_to_key is not None
 assert primary_s2k.string_to_key.kind == "argon2"
-
-subkey_s2k = secret_key.secret_subkey_s2ks()[0]
-assert subkey_s2k.usage == "cfb"
-assert subkey_s2k.string_to_key is not None
-assert subkey_s2k.string_to_key.kind == "iterated-salted"
 ```
 
-## Current binding surface
+## Feature overview
 
-- Parse ASCII-armored or binary transferable public keys.
-- Parse ASCII-armored or binary transferable secret keys.
-- Expose key metadata such as fingerprints, key IDs, OpenPGP key versions, creation times, public-key algorithms, subkey counts, user IDs, and secret-key S2K protection settings.
-- Inspect certificate self-signature metadata, including direct-key signatures, user-ID binding signatures, subkey binding signatures, embedded primary-key-binding signatures, key flags, features, and preferred algorithm lists.
-- Serialize keys back to binary packets or ASCII armor.
-- Generate new transferable secret/public keys with typed builder APIs based on rPGP's `SecretKeyParamsBuilder` and `SubkeyParamsBuilder`.
-- Configure key-generation parameters such as key versions, key flags, packet-header framing, user IDs, user attributes, preferred algorithms, SEIPD feature flags, passphrase protection, explicit S2K protection parameters, and subkeys.
-- Parse OpenPGP messages into reusable Python `Message` objects.
-- Inspect top-level message metadata and read signed, literal, or compressed payloads.
-- Decrypt encrypted messages to `DecryptedMessage` results using a secret key or password.
-- Continue inspecting or verifying nested signed payloads after decryption through the same signature helpers exposed on `Message`.
-- Create password-encrypted or recipient-encrypted OpenPGP messages.
-- Parse, serialize, create, and verify detached signatures.
-- Inspect detached, inline, and cleartext signature packet metadata through `SignatureInfo`.
-- Create simple signed OpenPGP messages with `sign_message(...)`.
-- Introspect and selectively verify multi-signed inline messages, including one-pass signatures.
-- Parse, create, serialize, and verify cleartext signed messages, including messages with multiple signatures.
-- Verify key self-signatures and bindings.
-- Convert a parsed secret key to its public-key view.
-- Inspect whether OpenPGP message data is literal, compressed, signed, or encrypted.
+The current binding surface covers these areas:
+
+- parse ASCII-armored or binary transferable public keys,
+- parse ASCII-armored or binary transferable secret keys,
+- inspect fingerprints, key IDs, versions, creation times, algorithms, subkeys, user IDs, and S2K settings,
+- inspect direct-key signatures, user-ID signatures, subkey bindings, embedded primary-key-binding signatures, key flags, features, and preferred algorithm lists,
+- serialize keys back to binary packets or ASCII armor,
+- generate new secret/public keys with typed builder APIs,
+- parse OpenPGP messages into reusable `Message` objects,
+- inspect message metadata and read signed, literal, or compressed payloads,
+- decrypt encrypted messages with a secret key or password,
+- create password-encrypted or recipient-encrypted messages,
+- parse, serialize, create, and verify detached signatures,
+- parse, create, serialize, and verify cleartext signed messages,
+- inspect and selectively verify multi-signed inline messages,
+- verify key self-signatures and bindings,
+- convert a parsed secret key to its public-key view.
+
+## Benchmarks
+
+Issue #1 asked whether the slower-feeling tests were expected and how the same operations compare with `PGPy` and `PGPy13`.
+
+To make that comparison reproducible, the repository now ships:
+
+- `scripts/benchmark.py` – an isolated benchmark runner,
+- `docs/benchmarks/results.json` – the committed raw results used below.
+
+### Reproduce the benchmark
+
+`PGPy` does not currently import on Python 3.13 because it still imports `imghdr`, so the benchmark intentionally runs **all three backends on the same CPython 3.12 interpreter**.
+
+```bash
+. "$HOME/.cargo/env"
+uv run --python 3.12 python scripts/benchmark.py
+```
+
+The script builds a fresh **release wheel** for `rpgp-py`, then launches isolated `uv run --with ...` environments for `rpgp-py`, `PGPy13`, and `PGPy` so benchmark-only dependencies do not need to be added to `pyproject.toml`.
+
+### Median runtime graph (1 KiB payload, lower is better)
+
+```mermaid
+xychart-beta
+    title "Median runtime per operation (ms, lower is better)"
+    x-axis ["Parse public key", "Parse secret key", "Detached sign + verify", "Encrypt + decrypt to recipient"]
+    y-axis "Milliseconds" 0 --> 130
+    bar "rpgp-py" [0.011, 0.156, 2.453, 2.537]
+    bar "PGPy13" [0.786, 1.473, 61.329, 122.726]
+    bar "PGPy" [0.776, 1.455, 61.420, 120.701]
+```
+
+For these four shared workflows, the release-built `rpgp-py` wheel is substantially faster on this machine: roughly **9x–71x** faster for key parsing and **25x–48x** faster for the sign/verify and recipient-encryption loops.
+
+### Password-encryption benchmark (reported separately)
+
+```mermaid
+xychart-beta
+    title "Password encrypt + decrypt median runtime (ms, lower is better)"
+    x-axis ["Password encrypt + decrypt"]
+    y-axis "Milliseconds" 0 --> 70
+    bar "rpgp-py" [62.369]
+    bar "PGPy13" [50.346]
+    bar "PGPy" [50.289]
+```
+
+This result is shown separately because the defaults are not a perfect apples-to-apples comparison: `rpgp-py` defaults to modern **SEIPDv2 + AEAD (OCB)** password-protected messages, while `PGPy`/`PGPy13` remain RFC 4880-era implementations.
+
+### Exact medians from `docs/benchmarks/results.json`
+
+| Operation | rpgp-py | PGPy13 | PGPy |
+| --- | ---: | ---: | ---: |
+| Parse armored public key | 0.011 ms | 0.786 ms | 0.776 ms |
+| Parse armored secret key | 0.156 ms | 1.473 ms | 1.455 ms |
+| Detached sign + verify | 2.453 ms | 61.329 ms | 61.420 ms |
+| Encrypt + decrypt to recipient | 2.537 ms | 122.726 ms | 120.701 ms |
+| Encrypt + decrypt with password | 62.369 ms | 50.346 ms | 50.289 ms |
+
+## Development
+
+Install dependencies and sync the local environment:
+
+```bash
+uv sync --all-extras --frozen
+```
+
+Useful commands:
+
+```bash
+uv run maturin develop
+uv run pytest -q
+uv run mypy .
+uv run prek run --all-files
+```
+
+## Acknowledgements
+
+Many thanks to the [`rpgp`](https://github.com/rpgp/rpgp) contributors and maintainers for building and documenting the Rust OpenPGP implementation that powers this package.
+
+## License
+
+This repository is distributed under the [MIT License](LICENSE). The upstream Rust crates it wraps keep their own licenses; check their repositories and published metadata when you need to audit the full dependency chain.
