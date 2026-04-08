@@ -1,0 +1,179 @@
+name: Publish PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the built distributions to PyPI
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux wheels (${{ matrix.name }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: manylinux-x86_64
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2014"
+            artifact_name: dist-manylinux-x86_64
+          - name: manylinux-aarch64
+            target: aarch64-unknown-linux-gnu
+            manylinux: "2014"
+            artifact_name: dist-manylinux-aarch64
+          - name: musllinux-x86_64
+            target: x86_64-unknown-linux-musl
+            manylinux: musllinux_1_2
+            artifact_name: dist-musllinux-x86_64
+          - name: musllinux-aarch64
+            target: aarch64-unknown-linux-musl
+            manylinux: musllinux_1_2
+            artifact_name: dist-musllinux-aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: v1.12.6
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --locked --out dist --compatibility pypi
+      - name: Upload distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS wheels (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact_name: dist-macos-x86_64
+          - name: arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            artifact_name: dist-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: v1.12.6
+          target: ${{ matrix.target }}
+          args: --release --locked --out dist --compatibility pypi
+      - name: Upload distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows wheels (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: win_amd64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            python_arch: x64
+            artifact_name: dist-win_amd64
+          - name: win32
+            runner: windows-latest
+            target: i686-pc-windows-msvc
+            python_arch: x86
+            artifact_name: dist-win32
+          - name: win_arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            python_arch: arm64
+            artifact_name: dist-win_arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          architecture: ${{ matrix.python_arch }}
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: v1.12.6
+          target: ${{ matrix.target }}
+          args: --release --locked --out dist --compatibility pypi
+      - name: Upload distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: v1.12.6
+          command: sdist
+          args: --out dist
+      - name: Upload distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-sdist
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-22.04
+    needs: [linux, macos, windows, sdist]
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/')
+        || (github.event_name == 'workflow_dispatch' && inputs.publish)
+      }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - uses: astral-sh/setup-uv@v5
+      - name: Publish distributions
+        shell: bash
+        run: |
+          token="${PYPI_TOKEN:-$PYPI_TOKEN_FROM_SECRET}"
+          if [ -z "$token" ]; then
+            echo "PYPI_TOKEN is not set"
+            exit 1
+          fi
+          uv publish --token "$token" dist/*
+        env:
+          PYPI_TOKEN_FROM_SECRET: ${{ secrets.PYPI_TOKEN }}
