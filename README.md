@@ -252,14 +252,12 @@ The current binding surface covers these areas:
 
 ## Benchmarks
 
-Issue #1 asked whether the slower-feeling tests were expected and how the same operations compare with `PGPy` and `PGPy13`.
+### Reproduce the benchmark
 
 To make that comparison reproducible, the repository now ships:
 
 - `scripts/benchmark.py` – an isolated benchmark runner,
 - `docs/benchmarks/results.json` – the committed raw results used below.
-
-### Reproduce the benchmark
 
 `PGPy` does not currently import on Python 3.13 because it still imports `imghdr`, so the benchmark intentionally runs **all three backends on the same CPython 3.12 interpreter**.
 
@@ -282,7 +280,7 @@ For these four shared workflows, the release-built `rpgp-py` wheel is substantia
 
 ![Grouped benchmark chart for password encryption and decryption](docs/benchmarks/password-runtime.svg)
 
-This result is shown separately because the defaults are not a perfect apples-to-apples comparison: `rpgp-py` defaults to modern **SEIPDv2 + AEAD (OCB)** password-protected messages, while `PGPy`/`PGPy13` remain RFC 4880-era implementations.
+This result is shown separately: `rpgp-py` defaults to modern **SEIPDv2 + AEAD (OCB)** password-protected messages, while `PGPy`/`PGPy13` remain RFC 4880-era implementations.
 
 ### Exact medians from `docs/benchmarks/results.json`
 

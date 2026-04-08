@@ -40,8 +40,8 @@ jobs:
             manylinux: musllinux_1_2
             artifact_name: dist-musllinux-aarch64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.10"
       - name: Build wheel
@@ -52,7 +52,7 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           args: --release --locked --out dist --compatibility pypi
       - name: Upload distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/*
@@ -74,8 +74,8 @@ jobs:
             target: aarch64-apple-darwin
             artifact_name: dist-macos-arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.10"
       - name: Build wheel
@@ -85,7 +85,7 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --locked --out dist --compatibility pypi
       - name: Upload distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/*
@@ -108,14 +108,9 @@ jobs:
             target: i686-pc-windows-msvc
             python_arch: x86
             artifact_name: dist-win32
-          - name: win_arm64
-            runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            python_arch: arm64
-            artifact_name: dist-win_arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.10"
           architecture: ${{ matrix.python_arch }}
@@ -126,7 +121,7 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --locked --out dist --compatibility pypi
       - name: Upload distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/*
@@ -136,7 +131,7 @@ jobs:
     name: Source distribution
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
@@ -144,7 +139,7 @@ jobs:
           command: sdist
           args: --out dist
       - name: Upload distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dist-sdist
           path: dist/*
@@ -160,7 +155,7 @@ jobs:
         || (github.event_name == 'workflow_dispatch' && inputs.publish)
       }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           merge-multiple: true
