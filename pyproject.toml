@@ -16,12 +16,12 @@ module-name = "openpgp._openpgp"
 
 [dependency-groups]
 dev = [
-    "mypy>=1.19.1",
     "pytest>=9.0.2",
     "ruff>=0.15.2",
     "pytest-cov>=7.1.0",
     "prek>=0.3.8",
     "maturin>=1.12.6",
+    "pyrefly>=0.60.0",
 ]
 
 [tool.pytest.ini_options]
@@ -119,3 +119,14 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openpgp"]
+
+[tool.pyrefly]
+project-includes = [
+    "src",
+    "tests",
+]
+search-path = [
+    "src",
+    "tests",
+]
+python-version = "3.10"

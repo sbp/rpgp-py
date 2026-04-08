@@ -13,6 +13,9 @@ lint:
 test *args:
     uv run --no-sync pytest {{ args }}
 
+typecheck:
+    uv run pyrefly check
+
 publish:
     rm -rf dist
     uv build

@@ -26,15 +26,6 @@ hooks = [
   { id = "mixed-line-ending" }
 ]
 
-[[repos]]
-repo = "https://github.com/pre-commit/mirrors-mypy"
-rev = "v1.20.0"
-hooks = [
-  {
-    id = "mypy",
-    additional_dependencies = ["pydantic", "pytest"]
-  }
-]
 
 [[repos]]
 repo = "local"
@@ -51,6 +42,13 @@ hooks = [
     id = "just_format",
     name = "just_format",
     entry = "just --unstable --fmt",
+    language = "system",
+    pass_filenames = false
+    },
+    {
+    id = "type",
+    name ="type",
+    entry = "just typecheck",
     language = "system",
     pass_filenames = false
     }
