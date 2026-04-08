@@ -2,11 +2,9 @@
 
 Python bindings for [`rpgp`](https://github.com/rpgp/rpgp), exposed as the `openpgp` package.
 
-`rpgp-py` aims to make the Rust [`pgp`](https://docs.rs/pgp/latest/pgp/) implementation feel natural from Python while keeping the parts that matter for production use:
-
-- modern OpenPGP support from the `rpgp`/`pgp` ecosystem, including RFC 9580-era functionality,
+- support for RFC 9580
 - a typed Python surface (`.pyi` stubs ship with the package),
-- abi3 wheels for Python 3.10+,
+- wheels for Python 3.10+,
 - high-level helpers for common signing/encryption workflows,
 - detailed inspection APIs for packets, signatures, key bindings, and generated key material.
 
@@ -14,22 +12,15 @@ Python bindings for [`rpgp`](https://github.com/rpgp/rpgp), exposed as the `open
 
 Broadly:
 
-- **Modern spec coverage:** `rpgp-py` follows the Rust `pgp` crate, which targets newer OpenPGP work such as RFC 9580-compatible v6 key material and modern curves/packet handling. `PGPy` and `PGPy13` are still fundamentally RFC 4880-era libraries.
-- **Rust core, Python ergonomics:** the cryptographic core is implemented in Rust and exposed through a Python-first API.
+- **RFC 9580 coverage:** `rpgp-py` follows the Rust `pgp` crate, which targets newer OpenPGP work such as RFC 9580-compatible v6 key material and modern curves/packet handling. `PGPy` and `PGPy13` are still RFC 4880.
+- **Rust core:** the cryptographic core is implemented in Rust and exposed through a Python-first API.
 - **Typed builders and inspectors:** the package exposes typed builders for key generation plus rich metadata for self-signatures, key flags, features, user bindings, S2K settings, and public-key parameters.
 - **Python 3.13 story:** `PGPy` still imports `imghdr`, which was removed from the standard library in Python 3.13. `PGPy13` exists as a compatibility fork; `rpgp-py` targets current Python directly.
-- **Interoperability focus:** the test suite is built around real OpenPGP fixtures, including upstream-style interoperability cases.
-
+- 
 ## Installation
 
 ```bash
-uv sync
-```
-
-To build the extension locally in editable mode:
-
-```bash
-uv run maturin develop
+pip install rpgp-py
 ```
 
 ## Reference documentation
@@ -252,37 +243,21 @@ The current binding surface covers these areas:
 
 ## Benchmarks
 
-### Reproduce the benchmark
 
-To make that comparison reproducible, the repository now ships:
-
-- `scripts/benchmark.py` – an isolated benchmark runner,
-- `docs/benchmarks/results.json` – the committed raw results used below.
-
-`PGPy` does not currently import on Python 3.13 because it still imports `imghdr`, so the benchmark intentionally runs **all three backends on the same CPython 3.12 interpreter**.
-
-```bash
-. "$HOME/.cargo/env"
-uv run --python 3.12 python scripts/benchmark.py
-```
-
-The script builds a fresh **release wheel** for `rpgp-py`, then launches isolated `uv run --with ...` environments for `rpgp-py`, `PGPy13`, and `PGPy` so benchmark-only dependencies do not need to be added to `pyproject.toml`.
-
-GitHub's Mermaid `xychart-beta` renderer currently overlays multi-series bar datasets instead of drawing grouped bars, so the charts below are committed as static SVGs.
 
 ### Median runtime graph (1 KiB payload, lower is better)
 
 ![Grouped benchmark chart for the shared workflows](docs/benchmarks/median-runtime.svg)
 
-For these four shared workflows, the release-built `rpgp-py` wheel is substantially faster on this machine: roughly **9x–71x** faster for key parsing and **25x–48x** faster for the sign/verify and recipient-encryption loops.
+`rpgp-py` is substantially faster: roughly **9x–71x** faster for key parsing and **25x–48x** faster for the sign/verify and recipient-encryption loops.
 
-### Password-encryption benchmark (reported separately)
+### Password-encryption benchmark
 
 ![Grouped benchmark chart for password encryption and decryption](docs/benchmarks/password-runtime.svg)
 
 This result is shown separately: `rpgp-py` defaults to modern **SEIPDv2 + AEAD (OCB)** password-protected messages, while `PGPy`/`PGPy13` remain RFC 4880-era implementations.
 
-### Exact medians from `docs/benchmarks/results.json`
+### Table of results
 
 | Operation | rpgp-py | PGPy13 | PGPy |
 | --- | ---: | ---: | ---: |
@@ -292,21 +267,25 @@ This result is shown separately: `rpgp-py` defaults to modern **SEIPDv2 + AEAD (
 | Encrypt + decrypt to recipient | 2.537 ms | 122.726 ms | 120.701 ms |
 | Encrypt + decrypt with password | 62.369 ms | 50.346 ms | 50.289 ms |
 
-## Development
 
-Install dependencies and sync the local environment:
+### Reproduction
+
+To make that comparison reproducible, the repository now ships:
+
+- `scripts/benchmark.py` – an isolated benchmark runner,
+- `docs/benchmarks/results.json` – the committed raw results used below.
 
 ```bash
-uv sync --all-extras --frozen
+. "$HOME/.cargo/env"
+uv run --python 3.12 python scripts/benchmark.py
 ```
 
-Useful commands:
+## Development
+
+See the list of useful commands by running:
 
 ```bash
-uv run maturin develop
-uv run pytest -q
-uv run mypy .
-uv run prek run --all-files
+just
 ```
 
 ## Acknowledgements
