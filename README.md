@@ -270,31 +270,17 @@ uv run --python 3.12 python scripts/benchmark.py
 
 The script builds a fresh **release wheel** for `rpgp-py`, then launches isolated `uv run --with ...` environments for `rpgp-py`, `PGPy13`, and `PGPy` so benchmark-only dependencies do not need to be added to `pyproject.toml`.
 
+GitHub's Mermaid `xychart-beta` renderer currently overlays multi-series bar datasets instead of drawing grouped bars, so the charts below are committed as static SVGs.
+
 ### Median runtime graph (1 KiB payload, lower is better)
 
-```mermaid
-xychart-beta
-    title "Median runtime per operation (ms, lower is better)"
-    x-axis ["Parse public key", "Parse secret key", "Detached sign + verify", "Encrypt + decrypt to recipient"]
-    y-axis "Milliseconds" 0 --> 130
-    bar "rpgp-py" [0.011, 0.156, 2.453, 2.537]
-    bar "PGPy13" [0.786, 1.473, 61.329, 122.726]
-    bar "PGPy" [0.776, 1.455, 61.420, 120.701]
-```
+![Grouped benchmark chart for the shared workflows](docs/benchmarks/median-runtime.svg)
 
 For these four shared workflows, the release-built `rpgp-py` wheel is substantially faster on this machine: roughly **9x–71x** faster for key parsing and **25x–48x** faster for the sign/verify and recipient-encryption loops.
 
 ### Password-encryption benchmark (reported separately)
 
-```mermaid
-xychart-beta
-    title "Password encrypt + decrypt median runtime (ms, lower is better)"
-    x-axis ["Password encrypt + decrypt"]
-    y-axis "Milliseconds" 0 --> 70
-    bar "rpgp-py" [62.369]
-    bar "PGPy13" [50.346]
-    bar "PGPy" [50.289]
-```
+![Grouped benchmark chart for password encryption and decryption](docs/benchmarks/password-runtime.svg)
 
 This result is shown separately because the defaults are not a perfect apples-to-apples comparison: `rpgp-py` defaults to modern **SEIPDv2 + AEAD (OCB)** password-protected messages, while `PGPy`/`PGPy13` remain RFC 4880-era implementations.
 
