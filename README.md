@@ -280,6 +280,12 @@ To make that comparison reproducible, the repository now ships:
 uv run --python 3.12 python scripts/benchmark.py
 ```
 
+## Versioning
+
+`rpgp-py`'s version will reflect the major and minor version of the underlying `pgp` crate. 
+The patch version will be incremented for both Python-facing API changes and for any internal changes that require a new build of the Rust core, such as dependency updates or bug fixes.
+
+
 ## Development
 
 See the list of useful commands by running:
