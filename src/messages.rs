@@ -1,0 +1,658 @@
+use crate::*;
+use crate::conversions::*;
+use crate::info::*;
+use crate::keys::*;
+use crate::packets::*;
+use crate::serialization::*;
+
+/// A parsed OpenPGP message.
+///
+/// The message may be literal, compressed, signed, or encrypted.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+pub(crate) struct Message {
+    pub(crate) source: Vec<u8>,
+    pub(crate) info: MessageInfo,
+}
+
+pub(crate) fn owned_message_from_source(source: Vec<u8>) -> PyResult<Message> {
+    let info = inspect_message_from_source(&source).map_err(to_py_err)?;
+    Ok(Message { source, info })
+}
+
+pub(crate) fn decrypted_message_from_parsed(mut message: PgpMessage<'_>) -> PyResult<DecryptedMessage> {
+    let (kind, is_nested, is_signed, is_compressed, is_literal) = match &message {
+        PgpMessage::Literal { is_nested, .. } => ("literal", *is_nested, false, false, true),
+        PgpMessage::Compressed { is_nested, .. } => ("compressed", *is_nested, false, true, false),
+        PgpMessage::Signed { is_nested, .. } => ("signed", *is_nested, true, false, false),
+        PgpMessage::Encrypted { .. } => {
+            return Err(to_py_err("message is still encrypted after decryption"));
+        }
+    };
+
+    while message.is_compressed() {
+        message = message.decompress().map_err(to_py_err)?;
+    }
+
+    let literal_mode = message
+        .literal_data_header()
+        .map(|header| data_mode_name(header.mode()));
+    let literal_filename = message
+        .literal_data_header()
+        .map(|header| header.file_name().to_vec());
+    let payload = message.as_data_vec().map_err(to_py_err)?;
+    let signatures = match &message {
+        PgpMessage::Signed { reader, .. } => reader
+            .signatures()
+            .ok_or_else(|| to_py_err("cannot inspect signatures before reading the message"))?
+            .iter()
+            .map(decrypted_signature_from_full_signature)
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    Ok(DecryptedMessage {
+        kind: kind.to_string(),
+        is_nested,
+        is_signed,
+        is_compressed,
+        is_literal,
+        payload,
+        literal_mode,
+        literal_filename,
+        signatures,
+    })
+}
+
+pub(crate) fn signature_infos_from_signed_message(
+    mut message: PgpMessage<'_>,
+) -> PyResult<Vec<SignatureInfo>> {
+    message.as_data_vec().map_err(to_py_err)?;
+
+    match &message {
+        PgpMessage::Signed { reader, .. } => Ok(reader
+            .signatures()
+            .ok_or_else(|| to_py_err("cannot inspect signatures before reading the message"))?
+            .iter()
+            .map(signature_info_from_full_signature)
+            .collect()),
+        PgpMessage::Encrypted { .. } => Err(to_py_err(
+            "message must be decrypted before inspecting signatures",
+        )),
+        _ => Ok(Vec::new()),
+    }
+}
+
+pub(crate) fn verify_message_signature_info(
+    mut message: PgpMessage<'_>,
+    key: &SignedPublicKey,
+    index: usize,
+) -> PyResult<SignatureInfo> {
+    message.as_data_vec().map_err(to_py_err)?;
+
+    let info = match &message {
+        PgpMessage::Signed { reader, .. } => {
+            let signatures = reader
+                .signatures()
+                .ok_or_else(|| to_py_err("cannot verify signatures before reading the message"))?;
+            let signature = signatures
+                .get(index)
+                .ok_or_else(|| to_py_err("signature index out of range"))?;
+            signature_info_from_full_signature(signature)
+        }
+        PgpMessage::Encrypted { .. } => {
+            return Err(to_py_err(
+                "message must be decrypted before verifying signatures",
+            ));
+        }
+        PgpMessage::Literal { .. } => {
+            return Err(to_py_err("message was not signed"));
+        }
+        PgpMessage::Compressed { .. } => {
+            return Err(to_py_err(
+                "message must be decompressed before verifying signatures",
+            ));
+        }
+    };
+
+    message
+        .verify_nested_explicit(index, key)
+        .map_err(to_py_err)?;
+    Ok(info)
+}
+
+#[pymethods]
+impl Message {
+    /// Parse an ASCII-armored OpenPGP message.
+    #[staticmethod]
+    fn from_armor(data: &str) -> PyResult<(Self, Headers)> {
+        let info = inspect_message_from_source(data.as_bytes()).map_err(to_py_err)?;
+        let headers = info.headers.clone().unwrap_or_default();
+        Ok((
+            Self {
+                source: data.as_bytes().to_vec(),
+                info,
+            },
+            headers,
+        ))
+    }
+
+    /// Parse a binary OpenPGP message.
+    #[staticmethod]
+    fn from_bytes(data: &[u8]) -> PyResult<Self> {
+        owned_message_from_source(data.to_vec())
+    }
+
+    /// Return the message as binary OpenPGP packet bytes.
+    fn to_bytes(&self) -> PyResult<Vec<u8>> {
+        binary_message_source(&self.source, &self.info.headers)
+    }
+
+    /// The top-level message kind: literal, compressed, signed, or encrypted.
+    #[getter]
+    fn kind(&self) -> String {
+        self.info.kind.clone()
+    }
+
+    /// Whether this message was nested inside another OpenPGP message layer.
+    #[getter]
+    fn is_nested(&self) -> bool {
+        self.info.is_nested
+    }
+
+    /// ASCII-armor headers if the message was parsed from armor.
+    #[getter]
+    fn headers(&self) -> Option<Headers> {
+        self.info.headers.clone()
+    }
+
+    /// Whether the top-level message is signed.
+    #[getter]
+    fn is_signed(&self) -> bool {
+        self.kind() == "signed"
+    }
+
+    /// Whether the top-level message is compressed.
+    #[getter]
+    fn is_compressed(&self) -> bool {
+        self.kind() == "compressed"
+    }
+
+    /// Whether the top-level message is literal data.
+    #[getter]
+    fn is_literal(&self) -> bool {
+        self.kind() == "literal"
+    }
+
+    /// Read the inner payload as bytes, automatically decompressing nested compressed layers.
+    fn payload_bytes(&self) -> PyResult<Vec<u8>> {
+        payload_bytes_from_source(&self.source)
+    }
+
+    /// Read the inner payload as UTF-8 text, automatically decompressing nested compressed layers.
+    fn payload_text(&self) -> PyResult<String> {
+        payload_text_from_source(&self.source)
+    }
+
+    /// Return the literal data mode after automatic decompression, if a literal layer exists.
+    fn literal_mode(&self) -> PyResult<Option<String>> {
+        literal_mode_from_source(&self.source)
+    }
+
+    /// Return the literal file name octets after automatic decompression, if available.
+    fn literal_filename(&self) -> PyResult<Option<Vec<u8>>> {
+        literal_filename_from_source(&self.source)
+    }
+
+    /// Return the number of signatures after automatic decompression.
+    ///
+    /// For signed messages this includes both one-pass and prefixed signatures.
+    fn signature_count(&self) -> PyResult<usize> {
+        signature_count_from_source(&self.source)
+    }
+
+    /// Return the number of one-pass signatures after automatic decompression.
+    fn one_pass_signature_count(&self) -> PyResult<usize> {
+        one_pass_signature_count_from_source(&self.source)
+    }
+
+    /// Return the number of prefixed (non-one-pass) signatures after automatic decompression.
+    fn regular_signature_count(&self) -> PyResult<usize> {
+        regular_signature_count_from_source(&self.source)
+    }
+
+    /// Return metadata for each signature packet on a signed message.
+    ///
+    /// This reads the message to the end to finalize one-pass signature verification state,
+    /// mirroring the requirements of RFC 9580 one-pass signatures.
+    fn signature_infos(&self) -> PyResult<Vec<SignatureInfo>> {
+        signature_infos_from_source(&self.source)
+    }
+
+    /// Return the top-level public-key encrypted session key packets on an encrypted message.
+    fn public_key_encrypted_session_key_packets(
+        &self,
+    ) -> PyResult<Vec<PublicKeyEncryptedSessionKeyPacket>> {
+        let (public_key_packets, _, _) =
+            top_level_encryption_packets_from_source(&self.source, &self.info.headers)?;
+        Ok(public_key_packets)
+    }
+
+    /// Return the top-level password-encrypted session key packets on an encrypted message.
+    fn symmetric_key_encrypted_session_key_packets(
+        &self,
+    ) -> PyResult<Vec<SymKeyEncryptedSessionKeyPacket>> {
+        let (_, symmetric_key_packets, _) =
+            top_level_encryption_packets_from_source(&self.source, &self.info.headers)?;
+        Ok(symmetric_key_packets)
+    }
+
+    /// Return the top-level encrypted data packet on an encrypted message.
+    fn encrypted_data_packet(&self) -> PyResult<EncryptedDataPacket> {
+        let (_, _, encrypted_data_packet) =
+            top_level_encryption_packets_from_source(&self.source, &self.info.headers)?;
+        Ok(encrypted_data_packet)
+    }
+
+    /// Verify a specific signature on the message and return its metadata.
+    ///
+    /// The default index of ``0`` corresponds to the first signature reported by
+    /// :meth:`signature_infos`.
+    #[pyo3(signature = (key, index=0))]
+    fn verify_signature(&self, key: PyRef<'_, PublicKey>, index: usize) -> PyResult<SignatureInfo> {
+        verify_signature_from_source(&self.source, &key.inner, index)
+    }
+
+    /// Verify a signed message against a public key.
+    ///
+    /// By default, this verifies the first signature on the message. Pass ``index`` to target a
+    /// later signature in a multi-signed message.
+    #[pyo3(signature = (key, index=0))]
+    fn verify(&self, key: PyRef<'_, PublicKey>, index: usize) -> PyResult<()> {
+        let _ = self.verify_signature(key, index)?;
+        Ok(())
+    }
+
+    /// Decrypt an encrypted message using a secret key and optional key-protection password.
+    ///
+    /// The returned :class:`DecryptedMessage` preserves signature-inspection and verification
+    /// helpers so encrypted-and-signed messages can still be verified after decryption.
+    #[pyo3(signature = (key, password=None))]
+    fn decrypt(
+        &self,
+        key: PyRef<'_, SecretKey>,
+        password: Option<&str>,
+    ) -> PyResult<DecryptedMessage> {
+        let key_password = password_from_option(password);
+        let (message, _) = parse_message(&self.source).map_err(to_py_err)?;
+        let decrypted = message
+            .decrypt(&key_password, &key.inner)
+            .map_err(to_py_err)?;
+        decrypted_message_from_parsed(decrypted)
+    }
+
+    /// Decrypt an encrypted message using a message password.
+    ///
+    /// The returned :class:`DecryptedMessage` preserves signature-inspection helpers for any
+    /// signed payload revealed by decryption.
+    fn decrypt_with_password(&self, password: &str) -> PyResult<DecryptedMessage> {
+        let message_password = Password::from(password);
+        let (message, _) = parse_message(&self.source).map_err(to_py_err)?;
+        let decrypted = message
+            .decrypt_with_password(&message_password)
+            .map_err(to_py_err)?;
+        decrypted_message_from_parsed(decrypted)
+    }
+
+    /// Decrypt an encrypted message with a raw session key.
+    ///
+    /// For SEIPD v1 messages, ``symmetric_algorithm`` is required because the encrypted data packet
+    /// does not encode the algorithm. For SEIPD v2 messages the algorithm is inferred from the
+    /// packet and any provided value must match.
+    #[pyo3(signature = (session_key, symmetric_algorithm=None))]
+    fn decrypt_with_session_key(
+        &self,
+        session_key: &[u8],
+        symmetric_algorithm: Option<&str>,
+    ) -> PyResult<DecryptedMessage> {
+        let plain_session_key = plain_session_key_from_message_source(
+            &self.source,
+            &self.info.headers,
+            session_key,
+            symmetric_algorithm,
+        )?;
+        let (message, _) = parse_message(&self.source).map_err(to_py_err)?;
+        let decrypted = message
+            .decrypt_with_session_key(plain_session_key)
+            .map_err(to_py_err)?;
+        decrypted_message_from_parsed(decrypted)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Message(kind='{}', is_nested={})",
+            self.info.kind, self.info.is_nested
+        )
+    }
+}
+
+/// A decrypted OpenPGP message with eagerly extracted payload, metadata, and signatures.
+///
+/// The decrypted payload is materialized once so Python code can continue inspecting or verifying
+/// signed content that was revealed by decryption.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+pub(crate) struct DecryptedMessage {
+    pub(crate) kind: String,
+    pub(crate) is_nested: bool,
+    pub(crate) is_signed: bool,
+    pub(crate) is_compressed: bool,
+    pub(crate) is_literal: bool,
+    pub(crate) payload: Vec<u8>,
+    pub(crate) literal_mode: Option<String>,
+    pub(crate) literal_filename: Option<Vec<u8>>,
+    pub(crate) signatures: Vec<DecryptedSignature>,
+}
+
+#[pymethods]
+impl DecryptedMessage {
+    /// The top-level decrypted message kind.
+    #[getter]
+    fn kind(&self) -> String {
+        self.kind.clone()
+    }
+
+    /// Whether the decrypted message was nested inside another message layer.
+    #[getter]
+    fn is_nested(&self) -> bool {
+        self.is_nested
+    }
+
+    /// Whether the decrypted top-level message is signed.
+    #[getter]
+    fn is_signed(&self) -> bool {
+        self.is_signed
+    }
+
+    /// Whether the decrypted top-level message is compressed.
+    #[getter]
+    fn is_compressed(&self) -> bool {
+        self.is_compressed
+    }
+
+    /// Whether the decrypted top-level message is literal data.
+    #[getter]
+    fn is_literal(&self) -> bool {
+        self.is_literal
+    }
+
+    /// The decrypted payload bytes after automatic decompression.
+    fn payload_bytes(&self) -> Vec<u8> {
+        self.payload.clone()
+    }
+
+    /// The decrypted payload as UTF-8 text.
+    fn payload_text(&self) -> PyResult<String> {
+        String::from_utf8(self.payload.clone()).map_err(to_py_err)
+    }
+
+    /// The literal data mode after automatic decompression, if a literal layer exists.
+    fn literal_mode(&self) -> Option<String> {
+        self.literal_mode.clone()
+    }
+
+    /// The literal file name octets after automatic decompression, if available.
+    fn literal_filename(&self) -> Option<Vec<u8>> {
+        self.literal_filename.clone()
+    }
+
+    /// Return the number of signatures revealed by decryption and automatic decompression.
+    fn signature_count(&self) -> usize {
+        self.signatures.len()
+    }
+
+    /// Return the number of one-pass signatures revealed by decryption.
+    fn one_pass_signature_count(&self) -> usize {
+        self.signatures
+            .iter()
+            .filter(|signature| signature.is_one_pass)
+            .count()
+    }
+
+    /// Return the number of prefixed (non-one-pass) signatures revealed by decryption.
+    fn regular_signature_count(&self) -> usize {
+        self.signatures
+            .iter()
+            .filter(|signature| !signature.is_one_pass)
+            .count()
+    }
+
+    /// Return metadata for every signature packet revealed by decryption.
+    fn signature_infos(&self) -> Vec<SignatureInfo> {
+        self.signatures
+            .iter()
+            .map(signature_info_from_decrypted_signature)
+            .collect()
+    }
+
+    /// Verify a specific signature on the decrypted payload and return its metadata.
+    ///
+    /// The default index of ``0`` corresponds to the first signature reported by
+    /// :meth:`signature_infos`.
+    #[pyo3(signature = (key, index=0))]
+    fn verify_signature(&self, key: PyRef<'_, PublicKey>, index: usize) -> PyResult<SignatureInfo> {
+        if self.signatures.is_empty() {
+            return Err(to_py_err("message was not signed"));
+        }
+
+        let signature = self
+            .signatures
+            .get(index)
+            .ok_or_else(|| to_py_err("signature index out of range"))?;
+        signature
+            .signature
+            .verify(&key.inner, Cursor::new(self.payload.as_slice()))
+            .map_err(to_py_err)?;
+        Ok(signature_info_from_decrypted_signature(signature))
+    }
+
+    /// Verify a signed decrypted payload against a public key.
+    ///
+    /// By default, this verifies the first signature on the decrypted payload. Pass ``index`` to
+    /// target a later signature in a multi-signed payload.
+    #[pyo3(signature = (key, index=0))]
+    fn verify(&self, key: PyRef<'_, PublicKey>, index: usize) -> PyResult<()> {
+        let _ = self.verify_signature(key, index)?;
+        Ok(())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DecryptedMessage(kind='{}', is_nested={})",
+            self.kind, self.is_nested
+        )
+    }
+}
+
+/// A detached OpenPGP signature packet sequence.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+pub(crate) struct DetachedSignature {
+    pub(crate) inner: PgpDetachedSignature,
+}
+
+#[pymethods]
+impl DetachedSignature {
+    /// Parse an ASCII-armored detached signature.
+    #[staticmethod]
+    fn from_armor(data: &str) -> PyResult<(Self, Headers)> {
+        let (inner, headers) = PgpDetachedSignature::from_string(data).map_err(to_py_err)?;
+        Ok((Self { inner }, headers))
+    }
+
+    /// Parse a binary detached signature.
+    #[staticmethod]
+    fn from_bytes(data: &[u8]) -> PyResult<Self> {
+        let inner = PgpDetachedSignature::from_bytes(Cursor::new(data)).map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Create a detached binary signature using SHA-256.
+    #[staticmethod]
+    #[pyo3(signature = (data, key, password=None))]
+    fn sign_binary(
+        data: &[u8],
+        key: PyRef<'_, SecretKey>,
+        password: Option<&str>,
+    ) -> PyResult<Self> {
+        let password = password_from_option(password);
+        let inner = PgpDetachedSignature::sign_binary_data(
+            rand::thread_rng(),
+            &key.inner.primary_key,
+            &password,
+            HashAlgorithm::Sha256,
+            Cursor::new(data),
+        )
+        .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Return metadata for the detached signature packet.
+    fn signature_info(&self) -> SignatureInfo {
+        signature_info_from_signature(&self.inner.signature, false)
+    }
+
+    /// Verify a detached signature against a public key and payload.
+    fn verify(&self, key: PyRef<'_, PublicKey>, data: &[u8]) -> PyResult<()> {
+        self.inner.verify(&key.inner, data).map_err(to_py_err)
+    }
+
+    /// Verify a detached signature and return its metadata.
+    fn verify_signature(&self, key: PyRef<'_, PublicKey>, data: &[u8]) -> PyResult<SignatureInfo> {
+        self.inner.verify(&key.inner, data).map_err(to_py_err)?;
+        Ok(self.signature_info())
+    }
+
+    /// Serialize the detached signature to binary packet bytes.
+    fn to_bytes(&self) -> PyResult<Vec<u8>> {
+        self.inner.to_bytes().map_err(to_py_err)
+    }
+
+    /// Serialize the detached signature as ASCII armor.
+    fn to_armored(&self) -> PyResult<String> {
+        self.inner
+            .to_armored_string(ArmorOptions::default())
+            .map_err(to_py_err)
+    }
+
+    fn __repr__(&self) -> String {
+        "DetachedSignature()".to_string()
+    }
+}
+
+/// A cleartext signed message, following RFC 9580 section 7.
+#[pyclass(module = "openpgp")]
+#[derive(Clone)]
+pub(crate) struct CleartextSignedMessage {
+    pub(crate) inner: PgpCleartextSignedMessage,
+}
+
+#[pymethods]
+impl CleartextSignedMessage {
+    /// Parse an ASCII-armored cleartext signed message.
+    #[staticmethod]
+    fn from_armor(data: &str) -> PyResult<(Self, Headers)> {
+        let (inner, headers) = PgpCleartextSignedMessage::from_string(data).map_err(to_py_err)?;
+        Ok((Self { inner }, headers))
+    }
+
+    /// Create a cleartext signed message using SHA-256 text signatures.
+    #[staticmethod]
+    #[pyo3(signature = (text, key, password=None))]
+    fn sign(text: &str, key: PyRef<'_, SecretKey>, password: Option<&str>) -> PyResult<Self> {
+        let password = password_from_option(password);
+        let inner =
+            PgpCleartextSignedMessage::sign(rand::thread_rng(), text, &*key.inner, &password)
+                .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    /// The dash-escaped cleartext body exactly as serialized inside the framework.
+    #[getter]
+    fn text(&self) -> String {
+        self.inner.text().to_string()
+    }
+
+    /// The normalized text that is hashed and verified, using CRLF line endings.
+    fn signed_text(&self) -> String {
+        self.inner.signed_text()
+    }
+
+    /// Return the number of signatures attached to the cleartext framework.
+    fn signature_count(&self) -> usize {
+        self.inner.signatures().len()
+    }
+
+    /// Return metadata for every cleartext signature packet.
+    fn signature_infos(&self) -> Vec<SignatureInfo> {
+        self.inner
+            .signatures()
+            .iter()
+            .map(|signature| signature_info_from_signature(signature, false))
+            .collect()
+    }
+
+    /// Verify at least one cleartext signature against the given public key and return metadata.
+    ///
+    /// If ``index`` is provided, only that signature packet is verified.
+    #[pyo3(signature = (key, index=None))]
+    fn verify_signature(
+        &self,
+        key: PyRef<'_, PublicKey>,
+        index: Option<usize>,
+    ) -> PyResult<SignatureInfo> {
+        let signed_text = self.inner.signed_text();
+        let signatures = self.inner.signatures();
+
+        if let Some(index) = index {
+            let signature = signatures
+                .get(index)
+                .ok_or_else(|| to_py_err("signature index out of range"))?;
+            signature
+                .verify(&key.inner, signed_text.as_bytes())
+                .map_err(to_py_err)?;
+            return Ok(signature_info_from_signature(signature, false));
+        }
+
+        for signature in signatures {
+            if signature.verify(&key.inner, signed_text.as_bytes()).is_ok() {
+                return Ok(signature_info_from_signature(signature, false));
+            }
+        }
+
+        Err(to_py_err("no matching signature found"))
+    }
+
+    /// Verify at least one cleartext signature against the given public key.
+    ///
+    /// If ``index`` is provided, only that signature packet is verified.
+    #[pyo3(signature = (key, index=None))]
+    fn verify(&self, key: PyRef<'_, PublicKey>, index: Option<usize>) -> PyResult<()> {
+        let _ = self.verify_signature(key, index)?;
+        Ok(())
+    }
+
+    /// Serialize the cleartext signed message as ASCII armor.
+    fn to_armored(&self) -> PyResult<String> {
+        self.inner
+            .to_armored_string(ArmorOptions::default())
+            .map_err(to_py_err)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CleartextSignedMessage(signature_count={})",
+            self.inner.signatures().len()
+        )
+    }
+}
