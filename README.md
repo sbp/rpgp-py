@@ -1,5 +1,11 @@
 # rpgp-py
 
+[![Supported versions](https://img.shields.io/pypi/pyversions/that-depends.svg)](https://pypi.python.org/pypi/brave-api-client)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/rpgp-py?period=monthly&units=ABBREVIATION&left_color=BLACK&right_color=GREEN&left_text=downloads%2Fmonth)](https://pepy.tech/projects/rpgp-py)
+[![GitHub stars](https://img.shields.io/github/stars/xelandernt/rpgp-py)](https://github.com/xelandernt/rpgp-py/stargazers)
+[![pyrefly](https://img.shields.io/endpoint?url=https://pyrefly.org/badge.json)](https://github.com/facebook/pyrefly)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
 Python bindings for [`rpgp`](https://github.com/rpgp/rpgp), exposed as the `openpgp` package.
 
 - support for RFC 9580
@@ -15,8 +21,8 @@ Broadly:
 - **RFC 9580 coverage:** `rpgp-py` follows the Rust `pgp` crate, which targets newer OpenPGP work such as RFC 9580-compatible v6 key material and modern curves/packet handling. `PGPy` and `PGPy13` are still RFC 4880.
 - **Rust core:** the cryptographic core is implemented in Rust and exposed through a Python-first API.
 - **Typed builders and inspectors:** the package exposes typed builders for key generation plus rich metadata for self-signatures, key flags, features, user bindings, S2K settings, and public-key parameters.
-- **Python 3.13 story:** `PGPy` still imports `imghdr`, which was removed from the standard library in Python 3.13. `PGPy13` exists as a compatibility fork; `rpgp-py` targets current Python directly.
-- 
+- **Python 3.13 support:** `PGPy` still imports `imghdr`, which was removed from the standard library in Python 3.13. `PGPy13` exists as a compatibility fork; `rpgp-py` targets current Python directly.
+
 ## Installation
 
 ```bash
@@ -25,13 +31,13 @@ pip install rpgp-py
 
 ## Reference documentation
 
-When you need the underlying Rust semantics or want to compare behaviour against upstream docs, these are the most useful references:
+When you need the underlying Rust semantics or want to compare behaviour against upstream docs, these are the useful references:
 
 - [`rpgp` on GitHub](https://github.com/rpgp/rpgp)
 - [`pgp` crate API docs on docs.rs](https://docs.rs/pgp/latest/pgp/)
 - [RFC 9580](https://www.rfc-editor.org/rfc/rfc9580)
 
-## Main use cases
+## Use cases
 
 ### 1. Parse and inspect transferable keys
 
@@ -202,8 +208,6 @@ encrypted_message, _ = Message.from_armor(encrypted)
 assert encrypted_message.decrypt(secret_key).payload_bytes() == b"secret"
 ```
 
-Use `PacketHeaderVersion.old()` when you need legacy packet-header framing for round-tripping older transferable key material.
-
 ### 6. Customize secret-key S2K protection for generated keys
 
 ```python
@@ -258,8 +262,6 @@ assert primary_s2k.string_to_key.kind == "argon2"
 
 ## Benchmarks
 
-
-
 ### Median runtime graph (1 KiB payload, lower is better)
 
 ![Grouped benchmark chart for the shared workflows](docs/benchmarks/median-runtime.svg)
@@ -291,7 +293,6 @@ To make that comparison reproducible, the repository now ships:
 - `docs/benchmarks/results.json` – the committed raw results used below.
 
 ```bash
-. "$HOME/.cargo/env"
 uv run --python 3.12 python scripts/benchmark.py
 ```
 

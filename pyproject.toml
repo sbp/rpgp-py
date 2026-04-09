@@ -9,9 +9,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 dynamic = ["version"]
-[tool.maturin]
-python-source = "src"
-module-name = "openpgp._openpgp"
+
+[project.urls]
+repository = "https://github.com/xelandernt/rpgp-py"
 
 
 [dependency-groups]
@@ -23,6 +23,11 @@ dev = [
     "maturin>=1.12.6",
     "pyrefly>=0.60.0",
 ]
+
+[tool.maturin]
+python-source = "src"
+module-name = "openpgp._openpgp"
+
 
 [tool.pytest.ini_options]
 addopts = [
@@ -108,11 +113,6 @@ docstring-code-format = false
 # This only has an effect when the `docstring-code-format` setting is
 # enabled.
 docstring-code-line-length = "dynamic"
-
-[tool.mypy]
-files = ["src", "tests"]
-python_version = "3.10"
-mypy_path = ["src", "tests"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
