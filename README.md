@@ -105,6 +105,41 @@ password_decrypted = password_message.decrypt_with_password("hunter2")
 assert password_decrypted.payload_text() == "secret"
 ```
 
+Binary output, packet access, and caller-supplied session keys:
+
+```python
+from openpgp import (
+    Message,
+    encrypt_message_to_recipient_bytes,
+    encrypt_session_key_to_recipient,
+)
+
+session_key = bytes(range(16))
+message_bytes = encrypt_message_to_recipient_bytes(
+    b"secret",
+    public_key,
+    version="seipd-v2",
+    symmetric_algorithm="aes128",
+    session_key=session_key,
+)
+
+message = Message.from_bytes(message_bytes)
+pkesk = message.public_key_encrypted_session_key_packets()[0]
+edata = message.encrypted_data_packet()
+
+assert pkesk.recipient_is_anonymous is False
+assert edata.kind == "seipd-v2"
+assert message.decrypt_with_session_key(session_key).payload_bytes() == b"secret"
+
+raw_pkesk = encrypt_session_key_to_recipient(
+    session_key,
+    public_key,
+    version="seipd-v2",
+    symmetric_algorithm="aes128",
+).to_bytes()
+assert raw_pkesk
+```
+
 ### 5. Generate modern RFC 9580-compatible key material
 
 ```python
@@ -220,26 +255,6 @@ assert primary_s2k.aead_algorithm == "ocb"
 assert primary_s2k.string_to_key is not None
 assert primary_s2k.string_to_key.kind == "argon2"
 ```
-
-## Feature overview
-
-The current binding surface covers these areas:
-
-- parse ASCII-armored or binary transferable public keys,
-- parse ASCII-armored or binary transferable secret keys,
-- inspect fingerprints, key IDs, versions, creation times, algorithms, subkeys, user IDs, and S2K settings,
-- inspect direct-key signatures, user-ID signatures, subkey bindings, embedded primary-key-binding signatures, key flags, features, and preferred algorithm lists,
-- serialize keys back to binary packets or ASCII armor,
-- generate new secret/public keys with typed builder APIs,
-- parse OpenPGP messages into reusable `Message` objects,
-- inspect message metadata and read signed, literal, or compressed payloads,
-- decrypt encrypted messages with a secret key or password,
-- create password-encrypted or recipient-encrypted messages,
-- parse, serialize, create, and verify detached signatures,
-- parse, create, serialize, and verify cleartext signed messages,
-- inspect and selectively verify multi-signed inline messages,
-- verify key self-signatures and bindings,
-- convert a parsed secret key to its public-key view.
 
 ## Benchmarks
 

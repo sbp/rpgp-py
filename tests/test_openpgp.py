@@ -11,8 +11,12 @@ from openpgp import (
     PublicKey,
     SecretKey,
     SignatureInfo,
+    encrypt_message_to_recipient_bytes,
     encrypt_message_to_recipient,
+    encrypt_message_with_password_bytes,
     encrypt_message_with_password,
+    encrypt_session_key_to_recipient,
+    encrypt_session_key_with_password,
     inspect_message,
     sign_cleartext_message,
     sign_message,
@@ -222,6 +226,151 @@ def test_encrypt_and_decrypt_message_to_recipient() -> None:
 
     with pytest.raises(ValueError, match="message was not signed"):
         decrypted.verify(public_key)
+
+
+def test_message_binary_round_trip_and_packet_access_for_recipient_message() -> None:
+    secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    public_key = secret_key.to_public_key()
+
+    armored = encrypt_message_to_recipient(
+        b"packet payload", public_key, file_name="packet.bin"
+    )
+    message, headers = Message.from_armor(armored)
+    reparsed = Message.from_bytes(message.to_bytes())
+
+    assert headers == {}
+    assert reparsed.decrypt(secret_key).payload_bytes() == b"packet payload"
+
+    pkesks = message.public_key_encrypted_session_key_packets()
+    skesks = message.symmetric_key_encrypted_session_key_packets()
+    encrypted_data = message.encrypted_data_packet()
+
+    assert len(pkesks) == 1
+    assert skesks == []
+    assert pkesks[0].version == 6
+    assert pkesks[0].public_key_algorithm is not None
+    assert pkesks[0].recipient_key_id is None
+    assert (
+        pkesks[0].recipient_fingerprint == public_key.subkey_bindings()[0].fingerprint
+    )
+    assert pkesks[0].recipient_is_anonymous is False
+    assert pkesks[0].values_bytes() is not None
+    assert pkesks[0].to_bytes()
+
+    assert encrypted_data.kind == "seipd-v2"
+    assert encrypted_data.version == 2
+    assert encrypted_data.symmetric_algorithm == "aes256"
+    assert encrypted_data.aead_algorithm == "ocb"
+    assert encrypted_data.chunk_size is not None
+    assert encrypted_data.salt is not None
+    assert len(encrypted_data.salt) == 32
+    assert encrypted_data.iv is None
+    assert encrypted_data.data()
+    assert encrypted_data.to_bytes()
+
+
+def test_password_message_binary_output_and_skesk_packet_access() -> None:
+    message_bytes = encrypt_message_with_password_bytes(
+        b"password packet payload",
+        "hunter2",
+        version="seipd-v2",
+        symmetric_algorithm="aes128",
+    )
+    message = Message.from_bytes(message_bytes)
+    encrypted_data = message.encrypted_data_packet()
+    pkesks = message.public_key_encrypted_session_key_packets()
+    skesks = message.symmetric_key_encrypted_session_key_packets()
+
+    assert pkesks == []
+    assert len(skesks) == 1
+    assert skesks[0].version == 6
+    assert skesks[0].symmetric_algorithm == "aes128"
+    assert skesks[0].aead_algorithm == "ocb"
+    assert skesks[0].string_to_key is not None
+    assert skesks[0].encrypted_key is not None
+    assert skesks[0].aead_iv is not None
+    assert skesks[0].is_supported is True
+    assert skesks[0].to_bytes()
+
+    assert encrypted_data.kind == "seipd-v2"
+    assert encrypted_data.symmetric_algorithm == "aes128"
+    assert encrypted_data.aead_algorithm == "ocb"
+    assert (
+        message.decrypt_with_password("hunter2").payload_bytes()
+        == b"password packet payload"
+    )
+
+
+def test_encrypt_to_recipient_with_custom_session_key_and_export_raw_pkesk() -> None:
+    secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    public_key = secret_key.to_public_key()
+    session_key = bytes(range(16))
+
+    message_bytes = encrypt_message_to_recipient_bytes(
+        b"custom session key payload",
+        public_key,
+        version="seipd-v2",
+        symmetric_algorithm="aes128",
+        session_key=session_key,
+    )
+    message = Message.from_bytes(message_bytes)
+    packet = encrypt_session_key_to_recipient(
+        session_key,
+        public_key,
+        version="seipd-v2",
+        symmetric_algorithm="aes128",
+    )
+
+    assert message.decrypt_with_session_key(session_key).payload_bytes() == (
+        b"custom session key payload"
+    )
+    assert message.decrypt(secret_key).payload_bytes() == b"custom session key payload"
+    assert packet.version == 6
+    assert packet.recipient_fingerprint == public_key.subkey_bindings()[0].fingerprint
+    assert packet.recipient_key_id is None
+    assert packet.recipient_is_anonymous is False
+    assert packet.public_key_algorithm is not None
+    assert packet.values_bytes() is not None
+    assert packet.to_bytes()
+
+
+def test_password_encryption_with_custom_session_key_and_raw_skesk() -> None:
+    session_key = bytes(range(16))
+    message_bytes = encrypt_message_with_password_bytes(
+        b"custom password session key payload",
+        "opensesame",
+        version="seipd-v1",
+        symmetric_algorithm="aes128",
+        session_key=session_key,
+    )
+    message = Message.from_bytes(message_bytes)
+    packet = encrypt_session_key_with_password(
+        session_key,
+        "opensesame",
+        version="seipd-v1",
+        symmetric_algorithm="aes128",
+    )
+
+    with pytest.raises(ValueError, match="symmetric_algorithm is required"):
+        message.decrypt_with_session_key(session_key)
+
+    assert (
+        message.decrypt_with_session_key(
+            session_key, symmetric_algorithm="aes128"
+        ).payload_text()
+        == "custom password session key payload"
+    )
+    assert message.decrypt_with_password("opensesame").payload_text() == (
+        "custom password session key payload"
+    )
+    assert packet.version == 4
+    assert packet.symmetric_algorithm == "aes128"
+    assert packet.aead_algorithm is None
+    assert packet.string_to_key is not None
+    assert packet.encrypted_key is not None
+    assert packet.aead_iv is None
+    assert packet.is_supported is True
+    assert packet.to_bytes()
 
 
 @pytest.mark.parametrize(
