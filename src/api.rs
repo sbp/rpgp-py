@@ -1,9 +1,9 @@
-use crate::*;
 use crate::conversions::*;
 use crate::info::*;
 use crate::keys::*;
 use crate::packets::*;
 use crate::serialization::*;
+use crate::*;
 
 macro_rules! encrypt_to_recipient {
     ($builder:expr, $recipient:expr) => {{
@@ -245,7 +245,10 @@ pub(crate) fn encrypt_message_to_recipient_bytes(
             }
             if let Some(session_key) = session_key {
                 builder
-                    .set_session_key(raw_session_key_from_bytes(session_key, symmetric_algorithm)?)
+                    .set_session_key(raw_session_key_from_bytes(
+                        session_key,
+                        symmetric_algorithm,
+                    )?)
                     .map_err(to_py_err)?;
             }
             encrypt_to_recipient!(builder, recipient);
@@ -265,7 +268,10 @@ pub(crate) fn encrypt_message_to_recipient_bytes(
             }
             if let Some(session_key) = session_key {
                 builder
-                    .set_session_key(raw_session_key_from_bytes(session_key, symmetric_algorithm)?)
+                    .set_session_key(raw_session_key_from_bytes(
+                        session_key,
+                        symmetric_algorithm,
+                    )?)
                     .map_err(to_py_err)?;
             }
             encrypt_to_recipient!(builder, recipient);
@@ -311,7 +317,10 @@ pub(crate) fn encrypt_message_to_recipient(
             }
             if let Some(session_key) = session_key {
                 builder
-                    .set_session_key(raw_session_key_from_bytes(session_key, symmetric_algorithm)?)
+                    .set_session_key(raw_session_key_from_bytes(
+                        session_key,
+                        symmetric_algorithm,
+                    )?)
                     .map_err(to_py_err)?;
             }
             encrypt_to_recipient!(builder, recipient);
@@ -333,7 +342,10 @@ pub(crate) fn encrypt_message_to_recipient(
             }
             if let Some(session_key) = session_key {
                 builder
-                    .set_session_key(raw_session_key_from_bytes(session_key, symmetric_algorithm)?)
+                    .set_session_key(raw_session_key_from_bytes(
+                        session_key,
+                        symmetric_algorithm,
+                    )?)
                     .map_err(to_py_err)?;
             }
             encrypt_to_recipient!(builder, recipient);
@@ -382,7 +394,10 @@ pub(crate) fn encrypt_message_with_password_bytes(
             }
             if let Some(session_key) = session_key {
                 builder
-                    .set_session_key(raw_session_key_from_bytes(session_key, symmetric_algorithm)?)
+                    .set_session_key(raw_session_key_from_bytes(
+                        session_key,
+                        symmetric_algorithm,
+                    )?)
                     .map_err(to_py_err)?;
             }
             builder
@@ -404,7 +419,10 @@ pub(crate) fn encrypt_message_with_password_bytes(
             }
             if let Some(session_key) = session_key {
                 builder
-                    .set_session_key(raw_session_key_from_bytes(session_key, symmetric_algorithm)?)
+                    .set_session_key(raw_session_key_from_bytes(
+                        session_key,
+                        symmetric_algorithm,
+                    )?)
                     .map_err(to_py_err)?;
             }
             builder
@@ -457,7 +475,10 @@ pub(crate) fn encrypt_message_with_password(
             }
             if let Some(session_key) = session_key {
                 builder
-                    .set_session_key(raw_session_key_from_bytes(session_key, symmetric_algorithm)?)
+                    .set_session_key(raw_session_key_from_bytes(
+                        session_key,
+                        symmetric_algorithm,
+                    )?)
                     .map_err(to_py_err)?;
             }
             builder
@@ -481,7 +502,10 @@ pub(crate) fn encrypt_message_with_password(
             }
             if let Some(session_key) = session_key {
                 builder
-                    .set_session_key(raw_session_key_from_bytes(session_key, symmetric_algorithm)?)
+                    .set_session_key(raw_session_key_from_bytes(
+                        session_key,
+                        symmetric_algorithm,
+                    )?)
                     .map_err(to_py_err)?;
             }
             builder
@@ -502,11 +526,29 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(pyo3::wrap_pyfunction!(inspect_message_bytes, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(sign_message, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(sign_cleartext_message, module)?)?;
-    module.add_function(pyo3::wrap_pyfunction!(encrypt_session_key_to_recipient, module)?)?;
-    module.add_function(pyo3::wrap_pyfunction!(encrypt_session_key_with_password, module)?)?;
-    module.add_function(pyo3::wrap_pyfunction!(encrypt_message_to_recipient_bytes, module)?)?;
-    module.add_function(pyo3::wrap_pyfunction!(encrypt_message_to_recipient, module)?)?;
-    module.add_function(pyo3::wrap_pyfunction!(encrypt_message_with_password_bytes, module)?)?;
-    module.add_function(pyo3::wrap_pyfunction!(encrypt_message_with_password, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        encrypt_session_key_to_recipient,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        encrypt_session_key_with_password,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        encrypt_message_to_recipient_bytes,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        encrypt_message_to_recipient,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        encrypt_message_with_password_bytes,
+        module
+    )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        encrypt_message_with_password,
+        module
+    )?)?;
     Ok(())
 }

@@ -301,7 +301,6 @@ uv run --python 3.12 python scripts/benchmark.py
 `rpgp-py`'s version will reflect the major and minor version of the underlying `pgp` crate. 
 The patch version will be incremented for both Python-facing API changes and for any internal changes that require a new build of the Rust core, such as dependency updates or bug fixes.
 
-
 ## Development
 
 See the list of useful commands by running:
@@ -316,4 +315,4 @@ Many thanks to the [`rpgp`](https://github.com/rpgp/rpgp) contributors and maint
 
 ## License
 
-This repository is distributed under the [MIT License](LICENSE). The upstream Rust crates it wraps keep their own licenses; check their repositories and published metadata when you need to audit the full dependency chain.
+This repository is distributed under the [MIT License](LICENSE).

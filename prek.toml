@@ -39,8 +39,8 @@ hooks = [
     pass_filenames = false
   },
     {
-    id = "just_format",
-    name = "just_format",
+    id = "just-format",
+    name = "just format",
     entry = "just --unstable --fmt",
     language = "system",
     pass_filenames = false
@@ -49,6 +49,20 @@ hooks = [
     id = "type",
     name ="type",
     entry = "just typecheck",
+    language = "system",
+    pass_filenames = false
+    },
+    {
+    id = "rust-check",
+    name = "rust check",
+    entry = "cargo check",
+    language = "system",
+    pass_filenames = false
+    },
+    {
+    id = "rust-fmt",
+    name = "rust fmt",
+    entry = "cargo fmt",
     language = "system",
     pass_filenames = false
     }

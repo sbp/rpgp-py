@@ -1,5 +1,5 @@
-use crate::*;
 use crate::key_params::*;
+use crate::*;
 
 pub(crate) fn exact_or_random_array<const N: usize>(
     value: Option<&[u8]>,
@@ -52,7 +52,9 @@ pub(crate) fn serialize_packet_body<T: Serialize>(packet: &T) -> PyResult<Vec<u8
 
 pub(crate) fn serialize_packet_with_header<T: PacketTrait>(packet: &T) -> PyResult<Vec<u8>> {
     let mut bytes = Vec::new();
-    packet.to_writer_with_header(&mut bytes).map_err(to_py_err)?;
+    packet
+        .to_writer_with_header(&mut bytes)
+        .map_err(to_py_err)?;
     Ok(bytes)
 }
 
@@ -67,7 +69,10 @@ pub(crate) fn binary_message_source(source: &[u8], headers: &Option<Headers>) ->
     }
 }
 
-pub(crate) fn parse_top_level_packets(source: &[u8], headers: &Option<Headers>) -> PyResult<Vec<PgpPacket>> {
+pub(crate) fn parse_top_level_packets(
+    source: &[u8],
+    headers: &Option<Headers>,
+) -> PyResult<Vec<PgpPacket>> {
     let binary = binary_message_source(source, headers)?;
     PacketParser::new(Cursor::new(binary.as_slice()))
         .collect::<Result<Vec<_>, _>>()

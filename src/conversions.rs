@@ -38,7 +38,9 @@ pub(crate) fn hash_algorithm_from_name(name: &str) -> PyResult<HashAlgorithm> {
     }
 }
 
-pub(crate) fn required_compression_algorithm_from_name(name: &str) -> PyResult<CompressionAlgorithm> {
+pub(crate) fn required_compression_algorithm_from_name(
+    name: &str,
+) -> PyResult<CompressionAlgorithm> {
     compression_algorithm_from_name(Some(name))?
         .ok_or_else(|| to_py_err("compression algorithm is required"))
 }
@@ -81,7 +83,9 @@ pub(crate) fn symmetric_algorithms_from_names(
     Ok(algorithms)
 }
 
-pub(crate) fn hash_algorithms_from_names(values: Vec<String>) -> PyResult<SmallVec<[HashAlgorithm; 8]>> {
+pub(crate) fn hash_algorithms_from_names(
+    values: Vec<String>,
+) -> PyResult<SmallVec<[HashAlgorithm; 8]>> {
     let mut algorithms = SmallVec::new();
     for value in values {
         algorithms.push(hash_algorithm_from_name(&value)?);
@@ -260,7 +264,9 @@ pub(crate) fn aead_algorithm_from_name(name: &str) -> PyResult<AeadAlgorithm> {
     }
 }
 
-pub(crate) fn compression_algorithm_from_name(name: Option<&str>) -> PyResult<Option<CompressionAlgorithm>> {
+pub(crate) fn compression_algorithm_from_name(
+    name: Option<&str>,
+) -> PyResult<Option<CompressionAlgorithm>> {
     match name.map(str::to_ascii_lowercase).as_deref() {
         None => Ok(None),
         Some("zip") => Ok(Some(CompressionAlgorithm::ZIP)),

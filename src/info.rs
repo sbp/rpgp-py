@@ -1,18 +1,25 @@
-use crate::*;
 use crate::conversions::*;
 use crate::key_params::*;
 use crate::messages::*;
+use crate::*;
 
-pub(crate) fn parse_message(source: &[u8]) -> Result<(PgpMessage<'_>, Option<Headers>), pgp::errors::Error> {
+pub(crate) fn parse_message(
+    source: &[u8],
+) -> Result<(PgpMessage<'_>, Option<Headers>), pgp::errors::Error> {
     PgpMessage::from_reader(Cursor::new(source))
 }
 
-pub(crate) fn inspect_message_from_source(source: &[u8]) -> Result<MessageInfo, pgp::errors::Error> {
+pub(crate) fn inspect_message_from_source(
+    source: &[u8],
+) -> Result<MessageInfo, pgp::errors::Error> {
     let (message, headers) = parse_message(source)?;
     Ok(message_info_from_parts(message, headers))
 }
 
-pub(crate) fn message_info_from_ref(message: &PgpMessage<'_>, headers: Option<Headers>) -> MessageInfo {
+pub(crate) fn message_info_from_ref(
+    message: &PgpMessage<'_>,
+    headers: Option<Headers>,
+) -> MessageInfo {
     let (kind, is_nested) = match message {
         PgpMessage::Literal { is_nested, .. } => ("literal", *is_nested),
         PgpMessage::Compressed { is_nested, .. } => ("compressed", *is_nested),
@@ -27,7 +34,10 @@ pub(crate) fn message_info_from_ref(message: &PgpMessage<'_>, headers: Option<He
     }
 }
 
-pub(crate) fn message_info_from_parts(message: PgpMessage<'_>, headers: Option<Headers>) -> MessageInfo {
+pub(crate) fn message_info_from_parts(
+    message: PgpMessage<'_>,
+    headers: Option<Headers>,
+) -> MessageInfo {
     message_info_from_ref(&message, headers)
 }
 
@@ -38,7 +48,9 @@ pub(crate) fn parse_message_info_from_reader(
     Ok(message_info_from_parts(message, headers))
 }
 
-pub(crate) fn prepare_message_for_content(source: &[u8]) -> Result<PgpMessage<'_>, pgp::errors::Error> {
+pub(crate) fn prepare_message_for_content(
+    source: &[u8],
+) -> Result<PgpMessage<'_>, pgp::errors::Error> {
     let (mut message, _) = parse_message(source)?;
     while message.is_compressed() {
         message = message.decompress()?;
@@ -465,7 +477,10 @@ pub(crate) fn features_info_from_features(features: &PgpFeatures) -> FeaturesInf
     }
 }
 
-pub(crate) fn signature_info_from_signature(signature: &Signature, is_one_pass: bool) -> SignatureInfo {
+pub(crate) fn signature_info_from_signature(
+    signature: &Signature,
+    is_one_pass: bool,
+) -> SignatureInfo {
     let key_flags = signature.key_flags();
     SignatureInfo {
         version: signature_version_number(signature.version()),
@@ -574,7 +589,9 @@ pub(crate) fn user_attribute_binding_infos_from_details(
         .collect::<Vec<_>>()
 }
 
-pub(crate) fn subkey_binding_info_from_signed_public_subkey(subkey: &SignedPublicSubKey) -> SubkeyBindingInfo {
+pub(crate) fn subkey_binding_info_from_signed_public_subkey(
+    subkey: &SignedPublicSubKey,
+) -> SubkeyBindingInfo {
     SubkeyBindingInfo {
         fingerprint: subkey.key.fingerprint().to_string(),
         key_id: subkey.key.legacy_key_id().to_string(),
@@ -591,7 +608,9 @@ pub(crate) fn subkey_binding_info_from_signed_public_subkey(subkey: &SignedPubli
     }
 }
 
-pub(crate) fn subkey_binding_info_from_signed_secret_subkey(subkey: &SignedSecretSubKey) -> SubkeyBindingInfo {
+pub(crate) fn subkey_binding_info_from_signed_secret_subkey(
+    subkey: &SignedSecretSubKey,
+) -> SubkeyBindingInfo {
     SubkeyBindingInfo {
         fingerprint: subkey.key.public_key().fingerprint().to_string(),
         key_id: subkey.key.public_key().legacy_key_id().to_string(),
@@ -614,14 +633,18 @@ pub(crate) struct DecryptedSignature {
     pub(crate) is_one_pass: bool,
 }
 
-pub(crate) fn decrypted_signature_from_full_signature(signature: &FullSignaturePacket) -> DecryptedSignature {
+pub(crate) fn decrypted_signature_from_full_signature(
+    signature: &FullSignaturePacket,
+) -> DecryptedSignature {
     DecryptedSignature {
         signature: signature.signature().clone(),
         is_one_pass: matches!(signature, FullSignaturePacket::Ops { .. }),
     }
 }
 
-pub(crate) fn signature_info_from_decrypted_signature(signature: &DecryptedSignature) -> SignatureInfo {
+pub(crate) fn signature_info_from_decrypted_signature(
+    signature: &DecryptedSignature,
+) -> SignatureInfo {
     signature_info_from_signature(&signature.signature, signature.is_one_pass)
 }
 

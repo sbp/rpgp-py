@@ -1,9 +1,9 @@
-use crate::*;
 use crate::conversions::*;
 use crate::info::*;
 use crate::keys::*;
 use crate::packets::*;
 use crate::serialization::*;
+use crate::*;
 
 /// A parsed OpenPGP message.
 ///
@@ -20,7 +20,9 @@ pub(crate) fn owned_message_from_source(source: Vec<u8>) -> PyResult<Message> {
     Ok(Message { source, info })
 }
 
-pub(crate) fn decrypted_message_from_parsed(mut message: PgpMessage<'_>) -> PyResult<DecryptedMessage> {
+pub(crate) fn decrypted_message_from_parsed(
+    mut message: PgpMessage<'_>,
+) -> PyResult<DecryptedMessage> {
     let (kind, is_nested, is_signed, is_compressed, is_literal) = match &message {
         PgpMessage::Literal { is_nested, .. } => ("literal", *is_nested, false, false, true),
         PgpMessage::Compressed { is_nested, .. } => ("compressed", *is_nested, false, true, false),

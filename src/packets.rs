@@ -1,8 +1,8 @@
-use crate::*;
 use crate::conversions::*;
 use crate::info::*;
 use crate::key_params::*;
 use crate::serialization::*;
+use crate::*;
 
 pub(crate) fn pkesk_version_number(version: pgp::types::PkeskVersion) -> u8 {
     match version {
@@ -62,10 +62,16 @@ impl PublicKeyEncryptedSessionKeyPacket {
     #[getter]
     fn recipient_is_anonymous(&self) -> bool {
         match self.inner.version() {
-            pgp::types::PkeskVersion::V3 => self.inner.id().map(|key_id| key_id.is_wildcard()).unwrap_or(false),
-            pgp::types::PkeskVersion::V6 => {
-                self.inner.fingerprint().map(|fingerprint| fingerprint.is_none()).unwrap_or(false)
-            }
+            pgp::types::PkeskVersion::V3 => self
+                .inner
+                .id()
+                .map(|key_id| key_id.is_wildcard())
+                .unwrap_or(false),
+            pgp::types::PkeskVersion::V6 => self
+                .inner
+                .fingerprint()
+                .map(|fingerprint| fingerprint.is_none())
+                .unwrap_or(false),
             pgp::types::PkeskVersion::Other(_) => false,
         }
     }
@@ -139,11 +145,9 @@ impl SymKeyEncryptedSessionKeyPacket {
 
     #[getter]
     fn string_to_key(&self) -> Option<PyStringToKey> {
-        self.inner
-            .s2k()
-            .map(|string_to_key| PyStringToKey {
-                inner: string_to_key.clone(),
-            })
+        self.inner.s2k().map(|string_to_key| PyStringToKey {
+            inner: string_to_key.clone(),
+        })
     }
 
     #[getter]
@@ -190,7 +194,9 @@ pub(crate) struct EncryptedDataPacket {
     pub(crate) packet_bytes: Vec<u8>,
 }
 
-pub(crate) fn encrypted_data_packet_from_packet(packet: PgpPacket) -> PyResult<EncryptedDataPacket> {
+pub(crate) fn encrypted_data_packet_from_packet(
+    packet: PgpPacket,
+) -> PyResult<EncryptedDataPacket> {
     match packet {
         PgpPacket::SymEncryptedData(packet) => Ok(EncryptedDataPacket {
             kind: "sed".to_string(),
@@ -308,7 +314,11 @@ pub(crate) fn top_level_encryption_packets_from_source(
 
     let encrypted_data_packet = encrypted_data_packet
         .ok_or_else(|| to_py_err("message does not contain a top-level encrypted data packet"))?;
-    Ok((public_key_packets, symmetric_key_packets, encrypted_data_packet))
+    Ok((
+        public_key_packets,
+        symmetric_key_packets,
+        encrypted_data_packet,
+    ))
 }
 
 pub(crate) fn plain_session_key_from_message_source(

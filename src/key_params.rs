@@ -1,8 +1,8 @@
-use crate::*;
 use crate::conversions::*;
 use crate::info::*;
 use crate::keys::*;
 use crate::serialization::*;
+use crate::*;
 
 /// Packet-header framing for transferable key packets.
 ///

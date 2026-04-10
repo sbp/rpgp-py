@@ -1,8 +1,8 @@
-use crate::*;
 use crate::conversions::*;
 use crate::info::*;
 use crate::key_params::*;
 use crate::serialization::*;
+use crate::*;
 
 /// A transferable OpenPGP public key (certificate) as defined by RFC 9580.
 #[pyclass(module = "openpgp")]
