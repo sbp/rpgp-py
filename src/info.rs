@@ -2,6 +2,7 @@ use crate::conversions::*;
 use crate::key_params::*;
 use crate::messages::*;
 use crate::*;
+use rsa::traits::PublicKeyParts;
 
 pub(crate) fn parse_message(
     source: &[u8],
@@ -237,6 +238,7 @@ pub(crate) fn empty_public_params_info(kind: &str) -> PublicParamsInfo {
         curve_oid: None,
         curve_alias: None,
         curve_bits: None,
+        rsa_bits: None,
         secret_key_length: None,
         is_supported: None,
         kdf_hash_algorithm: None,
@@ -258,6 +260,9 @@ pub(crate) fn public_params_info_from_params(params: &PgpPublicParams) -> Public
     let mut info = empty_public_params_info(kind);
 
     match params {
+        PgpPublicParams::RSA(params) => {
+            info.rsa_bits = u32::try_from(params.key.n().bits()).ok();
+        }
         PgpPublicParams::ECDSA(params) => match params {
             PgpEcdsaPublicParams::P256 { .. } => {
                 set_curve_metadata(&mut info, &ECCCurve::P256);
@@ -500,9 +505,18 @@ pub(crate) fn signature_info_from_signature(
             .map(|fingerprint| fingerprint.to_string())
             .collect(),
         creation_time: signature.created().map(|timestamp| timestamp.as_secs()),
+        key_expiration_seconds: signature
+            .key_expiration_time()
+            .map(|duration| duration.as_secs()),
         signature_expiration_seconds: signature
             .signature_expiration_time()
             .map(|duration| duration.as_secs()),
+        revocation_reason_code: signature
+            .revocation_reason_code()
+            .map(|code| (*code).into()),
+        revocation_reason: signature
+            .revocation_reason_string()
+            .map(|reason| String::from_utf8_lossy(reason.as_ref()).into_owned()),
         signer_user_id: signature
             .signers_userid()
             .map(|user_id| String::from_utf8_lossy(user_id.as_ref()).into_owned()),
@@ -518,6 +532,10 @@ pub(crate) fn signature_info_from_signature(
             signature.preferred_compression_algs(),
         ),
         preferred_aead_algorithms: aead_algorithm_preference_names(signature.preferred_aead_algs()),
+        preferred_key_server: signature.preferred_key_server().map(str::to_owned),
+        policy_uri: signature.policy_uri().map(str::to_owned),
+        is_revocable: signature.is_revocable(),
+        exportable_certification: signature.exportable_certification(),
         key_flags: key_flags_info_from_key_flags(&key_flags),
         features: signature.features().map(features_info_from_features),
         embedded_signature: signature
@@ -856,6 +874,7 @@ pub(crate) struct PublicParamsInfo {
     pub(crate) curve_oid: Option<String>,
     pub(crate) curve_alias: Option<String>,
     pub(crate) curve_bits: Option<u16>,
+    pub(crate) rsa_bits: Option<u32>,
     pub(crate) secret_key_length: Option<usize>,
     pub(crate) is_supported: Option<bool>,
     pub(crate) kdf_hash_algorithm: Option<String>,
@@ -893,6 +912,12 @@ impl PublicParamsInfo {
     #[getter]
     fn curve_bits(&self) -> Option<u16> {
         self.curve_bits
+    }
+
+    /// The encoded RSA modulus size in bits, when this key uses RSA public parameters.
+    #[getter]
+    fn rsa_bits(&self) -> Option<u32> {
+        self.rsa_bits
     }
 
     /// The expected secret-key length in bytes for supported ECC algorithms, when available.
@@ -1064,7 +1089,10 @@ pub(crate) struct SignatureInfo {
     pub(crate) issuer_key_ids: Vec<String>,
     pub(crate) issuer_fingerprints: Vec<String>,
     pub(crate) creation_time: Option<u32>,
+    pub(crate) key_expiration_seconds: Option<u32>,
     pub(crate) signature_expiration_seconds: Option<u32>,
+    pub(crate) revocation_reason_code: Option<u8>,
+    pub(crate) revocation_reason: Option<String>,
     pub(crate) signer_user_id: Option<String>,
     pub(crate) signed_hash_value: Option<Vec<u8>>,
     pub(crate) salt: Option<Vec<u8>>,
@@ -1072,6 +1100,10 @@ pub(crate) struct SignatureInfo {
     pub(crate) preferred_hash_algorithms: Vec<String>,
     pub(crate) preferred_compression_algorithms: Vec<String>,
     pub(crate) preferred_aead_algorithms: Vec<(String, String)>,
+    pub(crate) preferred_key_server: Option<String>,
+    pub(crate) policy_uri: Option<String>,
+    pub(crate) is_revocable: bool,
+    pub(crate) exportable_certification: bool,
     pub(crate) key_flags: KeyFlagsInfo,
     pub(crate) features: Option<FeaturesInfo>,
     pub(crate) embedded_signature: Option<Box<SignatureInfo>>,
@@ -1122,10 +1154,31 @@ impl SignatureInfo {
         self.creation_time
     }
 
+    /// The key-expiration interval declared by this signature, in seconds from creation time.
+    ///
+    /// This reflects metadata carried by a self-signature or binding signature, not a resolved
+    /// top-level key expiry for the certificate as a whole.
+    #[getter]
+    fn key_expiration_seconds(&self) -> Option<u32> {
+        self.key_expiration_seconds
+    }
+
     /// The signature expiration interval in seconds, if present.
     #[getter]
     fn signature_expiration_seconds(&self) -> Option<u32> {
         self.signature_expiration_seconds
+    }
+
+    /// The numeric RFC 9580 revocation-reason code carried by this signature, if present.
+    #[getter]
+    fn revocation_reason_code(&self) -> Option<u8> {
+        self.revocation_reason_code
+    }
+
+    /// The revocation-reason text carried by this signature, lossily decoded as UTF-8.
+    #[getter]
+    fn revocation_reason(&self) -> Option<String> {
+        self.revocation_reason.clone()
     }
 
     /// The signer's declared user ID from hashed subpackets, lossily decoded as UTF-8.
@@ -1168,6 +1221,30 @@ impl SignatureInfo {
     #[getter]
     fn preferred_aead_algorithms(&self) -> Vec<(String, String)> {
         self.preferred_aead_algorithms.clone()
+    }
+
+    /// The preferred key-server URI advertised by this signature, if present.
+    #[getter]
+    fn preferred_key_server(&self) -> Option<String> {
+        self.preferred_key_server.clone()
+    }
+
+    /// The signature policy URI advertised by this signature, if present.
+    #[getter]
+    fn policy_uri(&self) -> Option<String> {
+        self.policy_uri.clone()
+    }
+
+    /// Whether this signature says the certified object may later be revoked.
+    #[getter]
+    fn is_revocable(&self) -> bool {
+        self.is_revocable
+    }
+
+    /// Whether this certification signature is exportable to other implementations.
+    #[getter]
+    fn exportable_certification(&self) -> bool {
+        self.exportable_certification
     }
 
     /// Decoded RFC 9580 key-flag bits advertised by this signature.
@@ -1236,5 +1313,120 @@ impl MessageInfo {
             "MessageInfo(kind='{}', is_nested={})",
             self.kind, self.is_nested
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pgp::packet::RevocationCode;
+    use pgp::packet::{Subpacket, SubpacketData};
+    use pgp::types::SignatureBytes;
+
+    #[test]
+    fn signature_info_exposes_key_expiration_seconds() {
+        let signature = Signature::v4(
+            PacketHeader::from_parts(
+                PgpPacketHeaderVersion::New,
+                Tag::Signature,
+                PacketLength::Fixed(0),
+            )
+            .expect("signature header"),
+            SignatureType::Key,
+            PgpPublicKeyAlgorithm::RSA,
+            HashAlgorithm::Sha256,
+            [0, 0],
+            SignatureBytes::Mpis(vec![]),
+            vec![
+                Subpacket::regular(SubpacketData::SignatureCreationTime(Timestamp::from_secs(
+                    1_700_000_000,
+                )))
+                .expect("creation subpacket"),
+                Subpacket::regular(SubpacketData::KeyExpirationTime(
+                    pgp::types::Duration::from_secs(86_400),
+                ))
+                .expect("key expiration subpacket"),
+            ],
+            vec![],
+        );
+
+        let info = signature_info_from_signature(&signature, false);
+
+        assert_eq!(info.key_expiration_seconds, Some(86_400));
+        assert_eq!(info.key_expiration_seconds(), Some(86_400));
+    }
+
+    #[test]
+    fn signature_info_exposes_policy_metadata() {
+        let signature = Signature::v4(
+            PacketHeader::from_parts(
+                PgpPacketHeaderVersion::New,
+                Tag::Signature,
+                PacketLength::Fixed(0),
+            )
+            .expect("signature header"),
+            SignatureType::CertPositive,
+            PgpPublicKeyAlgorithm::RSA,
+            HashAlgorithm::Sha256,
+            [0, 0],
+            SignatureBytes::Mpis(vec![]),
+            vec![
+                Subpacket::regular(SubpacketData::PreferredKeyServer(
+                    "https://keys.example.test".to_string(),
+                ))
+                .expect("preferred key server subpacket"),
+                Subpacket::regular(SubpacketData::PolicyURI(
+                    "https://policy.example.test".to_string(),
+                ))
+                .expect("policy uri subpacket"),
+                Subpacket::regular(SubpacketData::Revocable(false)).expect("revocable subpacket"),
+                Subpacket::regular(SubpacketData::ExportableCertification(false))
+                    .expect("exportable certification subpacket"),
+            ],
+            vec![],
+        );
+
+        let info = signature_info_from_signature(&signature, false);
+
+        assert_eq!(
+            info.preferred_key_server(),
+            Some("https://keys.example.test".to_string())
+        );
+        assert_eq!(
+            info.policy_uri(),
+            Some("https://policy.example.test".to_string())
+        );
+        assert!(!info.is_revocable());
+        assert!(!info.exportable_certification());
+    }
+
+    #[test]
+    fn signature_info_exposes_revocation_reason_metadata() {
+        let signature = Signature::v4(
+            PacketHeader::from_parts(
+                PgpPacketHeaderVersion::New,
+                Tag::Signature,
+                PacketLength::Fixed(0),
+            )
+            .expect("signature header"),
+            SignatureType::KeyRevocation,
+            PgpPublicKeyAlgorithm::RSA,
+            HashAlgorithm::Sha256,
+            [0, 0],
+            SignatureBytes::Mpis(vec![]),
+            vec![
+                Subpacket::regular(SubpacketData::RevocationReason(
+                    RevocationCode::KeyRetired,
+                    b"superseded".as_slice().into(),
+                ))
+                .expect("revocation reason subpacket"),
+            ],
+            vec![],
+        );
+
+        let info = signature_info_from_signature(&signature, false);
+
+        assert_eq!(info.revocation_reason_code(), Some(3));
+        assert_eq!(info.revocation_reason(), Some("superseded".to_string()));
     }
 }

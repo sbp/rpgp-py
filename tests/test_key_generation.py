@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from pathlib import Path
 from typing import Final, Literal, NamedTuple
 
 import pytest
@@ -49,6 +50,7 @@ ZLIB_ONLY: Final[list[CompressionPreferenceName]] = ["zlib"]
 JPEG_USER_ATTRIBUTE_DATA: Final[bytes] = bytes.fromhex("ffd8ffe000104a464946000101")
 FIXED_PRIMARY_CREATED_AT: Final[int] = 1_700_000_000
 FIXED_SUBKEY_CREATED_AT: Final[int] = FIXED_PRIMARY_CREATED_AT + 123
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 class PacketHeaderInfo(NamedTuple):
@@ -103,6 +105,10 @@ def parse_packet_headers(data: bytes) -> list[PacketHeaderInfo]:
 
     assert offset == len(data)
     return headers
+
+
+def read_fixture_text(name: str) -> str:
+    return (FIXTURES / name).read_text()
 
 
 def build_modern_signing_key(version: KeyVersion) -> SecretKeyParamsBuilder:
@@ -369,6 +375,39 @@ def test_legacy_curve25519_public_params_expose_curve_metadata() -> None:
     assert reparsed_public.public_params.curve == "ed25519"
     assert reparsed_secret.subkey_bindings()[0].public_params.curve == "curve25519"
     assert reparsed_public.subkey_bindings()[0].public_params.curve == "curve25519"
+
+
+def test_rsa_public_params_expose_modulus_size_for_generated_and_parsed_keys() -> None:
+    secret_key = (
+        SecretKeyParamsBuilder()
+        .created_at(FIXED_PRIMARY_CREATED_AT)
+        .key_type(KeyType.rsa(2048))
+        .can_certify(True)
+        .can_sign(True)
+        .primary_user_id("alice")
+        .build()
+        .generate()
+    )
+    public_key = secret_key.to_public_key()
+
+    for key in (secret_key, public_key):
+        params = key.public_params
+        assert params.kind == "rsa"
+        assert params.rsa_bits == 2048
+        assert params.curve is None
+        assert params.curve_bits is None
+        assert params.secret_key_length is None
+
+    reparsed_secret, _ = SecretKey.from_armor(secret_key.to_armored())
+    reparsed_public, _ = PublicKey.from_armor(public_key.to_armored())
+    assert reparsed_secret.public_params.rsa_bits == 2048
+    assert reparsed_public.public_params.rsa_bits == 2048
+
+    fixture_public_key, _ = PublicKey.from_armor(
+        read_fixture_text("rsa-rsa-sample-1.asc")
+    )
+    assert fixture_public_key.public_params.rsa_bits == 2048
+    assert fixture_public_key.subkey_bindings()[0].public_params.rsa_bits == 2048
 
 
 def test_legacy_curve25519_key_details_expose_algorithm_categories() -> None:
@@ -764,6 +803,12 @@ def assert_certificate_preferences_are_exposed_on_signature(
     assert info.preferred_hash_algorithms == ["sha512"]
     assert info.preferred_compression_algorithms == ["zlib"]
     assert info.preferred_aead_algorithms == []
+    assert info.preferred_key_server is None
+    assert info.policy_uri is None
+    assert info.revocation_reason_code is None
+    assert info.revocation_reason is None
+    assert info.is_revocable is True
+    assert info.exportable_certification is True
     assert info.key_flags.certify is True
     assert info.key_flags.sign is True
     assert info.key_flags.encrypt_communications is False
