@@ -6,7 +6,7 @@
 [![pyrefly](https://img.shields.io/endpoint?url=https://pyrefly.org/badge.json)](https://github.com/facebook/pyrefly)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-Python bindings for [`rpgp`](https://github.com/rpgp/rpgp), exposed as the `openpgp` package.
+Python bindings for [`rPGP`](https://github.com/rpgp/rpgp), exposed as the `openpgp` package.
 
 - support for RFC 9580
 - a typed Python surface (`.pyi` stubs ship with the package),
@@ -33,7 +33,7 @@ pip install rpgp-py
 
 When you need the underlying Rust semantics or want to compare behaviour against upstream docs, these are the useful references:
 
-- [`rpgp` on GitHub](https://github.com/rpgp/rpgp)
+- [`rPGP` on GitHub](https://github.com/rpgp/rpgp)
 - [`pgp` crate API docs on docs.rs](https://docs.rs/pgp/latest/pgp/)
 - [RFC 9580](https://www.rfc-editor.org/rfc/rfc9580)
 
@@ -353,7 +353,7 @@ just
 
 ## Acknowledgements
 
-Many thanks to the [`rpgp`](https://github.com/rpgp/rpgp) contributors and maintainers for building and documenting the Rust OpenPGP implementation that powers this package.
+Many thanks to the [`rPGP`](https://github.com/rpgp/rpgp) contributors and maintainers for building and documenting the Rust OpenPGP implementation that powers this package.
 
 ## License
 
