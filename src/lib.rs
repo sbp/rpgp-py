@@ -25,8 +25,8 @@ use pgp::{
     },
     packet::{
         DataMode, Features as PgpFeatures, ImageHeader as PgpImageHeader,
-        ImageHeaderV1 as PgpImageHeaderV1, KeyFlags as PgpKeyFlags, Packet as PgpPacket,
-        PacketHeader, PacketParser, PacketTrait,
+        ImageHeaderV1 as PgpImageHeaderV1, KeyFlags as PgpKeyFlags, Notation as PgpNotation,
+        Packet as PgpPacket, PacketHeader, PacketParser, PacketTrait,
         PublicKeyEncryptedSessionKey as PgpPublicKeyEncryptedSessionKey, Signature, SignatureType,
         SignatureVersion, SignatureVersionSpecific,
         SymEncryptedProtectedDataConfig as PgpSymEncryptedProtectedDataConfig,
@@ -37,9 +37,10 @@ use pgp::{
     types::{
         CompressionAlgorithm, EcdhPublicParams as PgpEcdhPublicParams,
         EcdsaPublicParams as PgpEcdsaPublicParams,
-        EddsaLegacyPublicParams as PgpEddsaLegacyPublicParams, KeyDetails, KeyVersion,
+        EddsaLegacyPublicParams as PgpEddsaLegacyPublicParams, KeyDetails, KeyId, KeyVersion,
         PacketHeaderVersion as PgpPacketHeaderVersion, PacketLength, Password,
-        PublicParams as PgpPublicParams, S2kParams as PgpS2kParams,
+        PublicParams as PgpPublicParams, RevocationKey as PgpRevocationKey,
+        RevocationKeyClass as PgpRevocationKeyClass, S2kParams as PgpS2kParams,
         SecretParams as PgpSecretParams, StringToKey as PgpStringToKey, Tag, Timestamp,
     },
 };
@@ -92,6 +93,8 @@ pub(crate) fn _openpgp(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<info::PublicParamsInfo>()?;
     module.add_class::<info::SubkeyBindingInfo>()?;
     module.add_class::<info::UserBindingInfo>()?;
+    module.add_class::<info::SignatureNotationInfo>()?;
+    module.add_class::<info::RevocationKeyInfo>()?;
     module.add_class::<info::SignatureInfo>()?;
     module.add_class::<messages::DetachedSignature>()?;
     module.add_class::<messages::CleartextSignedMessage>()?;

@@ -147,6 +147,8 @@ def test_generate_ed25519_x25519_key_roundtrips(version: KeyVersion) -> None:
     assert secret_key.secret_subkey_count == 1
     assert public_key.public_subkey_count == 1
     assert public_key.user_ids == ["Me-X <me-25519-rfc9580@mail.com>"]
+    assert secret_key.revocation_signature_infos() == []
+    assert public_key.revocation_signature_infos() == []
 
     secret_key.verify_bindings()
     public_key.verify_bindings()
@@ -804,7 +806,9 @@ def assert_certificate_preferences_are_exposed_on_signature(
     assert info.preferred_compression_algorithms == ["zlib"]
     assert info.preferred_aead_algorithms == []
     assert info.preferred_key_server is None
+    assert info.notations == []
     assert info.policy_uri is None
+    assert info.revocation_key is None
     assert info.revocation_reason_code is None
     assert info.revocation_reason is None
     assert info.is_revocable is True

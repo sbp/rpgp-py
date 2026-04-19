@@ -53,12 +53,12 @@ assert public_key.public_subkey_count >= 0
 assert secret_key.secret_subkey_count >= 0
 ```
 
-This is the core entry point when you want to inspect fingerprints, key IDs, OpenPGP key versions, user IDs, subkeys, self-signatures, or packet-level metadata.
+This is the core entry point when you want to inspect fingerprints, key IDs, OpenPGP key versions, user IDs, subkeys, self-signatures, revocation signatures, or packet-level metadata.
 
 ### 2. Sign and verify messages and detached signatures
 
 ```python
-from openpgp import DetachedSignature, Message, sign_message
+from openpgp import DetachedSignature, Message, sign_message, sign_message_many
 
 signed = sign_message(b"hello world", secret_key)
 message, _ = Message.from_armor(signed)
@@ -70,14 +70,34 @@ signature.verify(public_key, b"hello world")
 info = signature.signature_info()
 assert info.signature_type == "binary"
 assert info.hash_algorithm == "SHA256"
+
+text_signature = DetachedSignature.sign_text(
+    "hello\nworld\n",
+    secret_key,
+    hash_algorithm="sha512",
+)
+text_signature.verify_text(public_key, "hello\r\nworld\r\n")
+assert text_signature.signature_info().hash_algorithm == "SHA512"
+
+multi_signed = sign_message_many(
+    b"hello world",
+    [secret_key, other_secret_key],
+    hash_algorithm="sha384",
+)
+multi_message, _ = Message.from_armor(multi_signed)
+assert multi_message.signature_count() == 2
 ```
 
-For inline or detached signatures, `SignatureInfo` exposes the signature packet metadata that is often needed for debugging or auditing.
+For inline or detached signatures, `SignatureInfo` exposes the signature packet metadata that is often needed for debugging or auditing, including issuer data, notations, and revocation-key metadata when those subpackets are present.
 
 ### 3. Work with cleartext signatures
 
 ```python
-from openpgp import CleartextSignedMessage, sign_cleartext_message
+from openpgp import (
+    CleartextSignedMessage,
+    sign_cleartext_message,
+    sign_cleartext_message_many,
+)
 
 armored = sign_cleartext_message("hello\n-world\n", secret_key)
 message, _ = CleartextSignedMessage.from_armor(armored)
@@ -85,6 +105,14 @@ message, _ = CleartextSignedMessage.from_armor(armored)
 assert message.signed_text() == "hello\r\n-world\r\n"
 assert message.signature_count() == 1
 message.verify(public_key)
+
+multi_armored = sign_cleartext_message_many(
+    "hello\n-world\n",
+    [secret_key, other_secret_key],
+    hash_algorithm="sha384",
+)
+multi_message, _ = CleartextSignedMessage.from_armor(multi_armored)
+assert multi_message.signature_count() == 2
 ```
 
 ### 4. Encrypt and decrypt OpenPGP messages
@@ -92,12 +120,24 @@ message.verify(public_key)
 Recipient encryption:
 
 ```python
-from openpgp import Message, encrypt_message_to_recipient
+from openpgp import Message, encrypt_message_to_recipient, encrypt_message_to_recipients
 
 recipient_encrypted = encrypt_message_to_recipient(b"secret", public_key)
 recipient_message, _ = Message.from_armor(recipient_encrypted)
 recipient_decrypted = recipient_message.decrypt(secret_key)
 assert recipient_decrypted.payload_bytes() == b"secret"
+
+shared_encrypted = encrypt_message_to_recipients(
+    b"secret",
+    [public_key, other_public_key],
+    anonymous_recipient=True,
+)
+shared_message, _ = Message.from_armor(shared_encrypted)
+assert len(shared_message.public_key_encrypted_session_key_packets()) == 2
+assert all(
+    packet.recipient_is_anonymous
+    for packet in shared_message.public_key_encrypted_session_key_packets()
+)
 ```
 
 Password encryption:
@@ -145,6 +185,8 @@ raw_pkesk = encrypt_session_key_to_recipient(
 ).to_bytes()
 assert raw_pkesk
 ```
+
+`encrypt_session_key_to_recipient`, `encrypt_message_to_recipient`, and the multi-recipient helpers all accept `anonymous_recipient=True` when you want PKESK packets without recipient identifiers.
 
 ### 5. Generate modern RFC 9580-compatible key material
 

@@ -123,6 +123,65 @@ pub(crate) fn verify_message_signature_info(
     Ok(info)
 }
 
+pub(crate) fn detached_binary_signature_from_data(
+    data: &[u8],
+    key: &SignedSecretKey,
+    password: &Password,
+    hash_algorithm: HashAlgorithm,
+) -> PyResult<PgpDetachedSignature> {
+    PgpDetachedSignature::sign_binary_data(
+        rand::thread_rng(),
+        &key.primary_key,
+        password,
+        hash_algorithm,
+        Cursor::new(data),
+    )
+    .map_err(to_py_err)
+}
+
+pub(crate) fn detached_text_signature_from_text(
+    text: &str,
+    key: &SignedSecretKey,
+    password: &Password,
+    hash_algorithm: HashAlgorithm,
+) -> PyResult<PgpDetachedSignature> {
+    PgpDetachedSignature::sign_text_data(
+        rand::thread_rng(),
+        &key.primary_key,
+        password,
+        hash_algorithm,
+        Cursor::new(text.as_bytes()),
+    )
+    .map_err(to_py_err)
+}
+
+pub(crate) fn cleartext_signed_message_from_signers(
+    text: &str,
+    signers: &[(SignedSecretKey, Password)],
+    hash_algorithm: HashAlgorithm,
+) -> PyResult<PgpCleartextSignedMessage> {
+    if signers.is_empty() {
+        return Err(to_py_err("at least one signer is required"));
+    }
+
+    PgpCleartextSignedMessage::new_many(text, |normalized_text| {
+        signers
+            .iter()
+            .map(|(signer, password)| {
+                PgpDetachedSignature::sign_text_data(
+                    rand::thread_rng(),
+                    &signer.primary_key,
+                    password,
+                    hash_algorithm,
+                    Cursor::new(normalized_text.as_bytes()),
+                )
+                .map(|signature| signature.signature)
+            })
+            .collect()
+    })
+    .map_err(to_py_err)
+}
+
 #[pymethods]
 impl Message {
     /// Parse an ASCII-armored OpenPGP message.
@@ -499,23 +558,37 @@ impl DetachedSignature {
         Ok(Self { inner })
     }
 
-    /// Create a detached binary signature using SHA-256.
+    /// Create a detached binary signature using the selected hash algorithm.
     #[staticmethod]
-    #[pyo3(signature = (data, key, password=None))]
+    #[pyo3(signature = (data, key, password=None, hash_algorithm="sha256"))]
     fn sign_binary(
         data: &[u8],
         key: PyRef<'_, SecretKey>,
         password: Option<&str>,
+        hash_algorithm: &str,
     ) -> PyResult<Self> {
         let password = password_from_option(password);
-        let inner = PgpDetachedSignature::sign_binary_data(
-            rand::thread_rng(),
-            &key.inner.primary_key,
-            &password,
-            HashAlgorithm::Sha256,
-            Cursor::new(data),
-        )
-        .map_err(to_py_err)?;
+        let hash_algorithm = hash_algorithm_from_name(hash_algorithm)?;
+        let inner =
+            detached_binary_signature_from_data(data, &key.inner, &password, hash_algorithm)?;
+        Ok(Self { inner })
+    }
+
+    /// Create a detached text signature over UTF-8 text.
+    ///
+    /// Text signatures normalize line endings during signing and verification, making them stable
+    /// across LF and CRLF representations of the same text.
+    #[staticmethod]
+    #[pyo3(signature = (text, key, password=None, hash_algorithm="sha256"))]
+    fn sign_text(
+        text: &str,
+        key: PyRef<'_, SecretKey>,
+        password: Option<&str>,
+        hash_algorithm: &str,
+    ) -> PyResult<Self> {
+        let password = password_from_option(password);
+        let hash_algorithm = hash_algorithm_from_name(hash_algorithm)?;
+        let inner = detached_text_signature_from_text(text, &key.inner, &password, hash_algorithm)?;
         Ok(Self { inner })
     }
 
@@ -532,6 +605,27 @@ impl DetachedSignature {
     /// Verify a detached signature and return its metadata.
     fn verify_signature(&self, key: PyRef<'_, PublicKey>, data: &[u8]) -> PyResult<SignatureInfo> {
         self.inner.verify(&key.inner, data).map_err(to_py_err)?;
+        Ok(self.signature_info())
+    }
+
+    /// Verify a detached text signature against UTF-8 text.
+    ///
+    /// Text verification normalizes line endings, matching the semantics of text signatures.
+    fn verify_text(&self, key: PyRef<'_, PublicKey>, text: &str) -> PyResult<()> {
+        self.inner
+            .verify(&key.inner, text.as_bytes())
+            .map_err(to_py_err)
+    }
+
+    /// Verify a detached text signature and return its metadata.
+    ///
+    /// Text verification normalizes line endings, matching the semantics of text signatures.
+    fn verify_text_signature(
+        &self,
+        key: PyRef<'_, PublicKey>,
+        text: &str,
+    ) -> PyResult<SignatureInfo> {
+        self.verify_text(key, text)?;
         Ok(self.signature_info())
     }
 
@@ -568,14 +662,19 @@ impl CleartextSignedMessage {
         Ok((Self { inner }, headers))
     }
 
-    /// Create a cleartext signed message using SHA-256 text signatures.
+    /// Create a cleartext signed message using the selected hash algorithm.
     #[staticmethod]
-    #[pyo3(signature = (text, key, password=None))]
-    fn sign(text: &str, key: PyRef<'_, SecretKey>, password: Option<&str>) -> PyResult<Self> {
+    #[pyo3(signature = (text, key, password=None, hash_algorithm="sha256"))]
+    fn sign(
+        text: &str,
+        key: PyRef<'_, SecretKey>,
+        password: Option<&str>,
+        hash_algorithm: &str,
+    ) -> PyResult<Self> {
         let password = password_from_option(password);
-        let inner =
-            PgpCleartextSignedMessage::sign(rand::thread_rng(), text, &*key.inner, &password)
-                .map_err(to_py_err)?;
+        let hash_algorithm = hash_algorithm_from_name(hash_algorithm)?;
+        let signers = vec![(key.inner.clone(), password)];
+        let inner = cleartext_signed_message_from_signers(text, &signers, hash_algorithm)?;
         Ok(Self { inner })
     }
 

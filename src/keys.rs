@@ -91,6 +91,13 @@ impl PublicKey {
         direct_signature_infos_from_details(&self.inner.details)
     }
 
+    /// Return key-revocation signatures attached directly to the certificate.
+    ///
+    /// These signatures are separate from direct-key signatures and from user or subkey bindings.
+    fn revocation_signature_infos(&self) -> Vec<SignatureInfo> {
+        revocation_signature_infos_from_details(&self.inner.details)
+    }
+
     /// Return user IDs together with their certification self-signatures.
     ///
     /// Version-4 certificates carry certificate metadata such as key flags and preferred
@@ -238,6 +245,13 @@ impl SecretKey {
     /// feature advertisements on these direct-key signatures.
     fn direct_signature_infos(&self) -> Vec<SignatureInfo> {
         direct_signature_infos_from_details(&self.inner.details)
+    }
+
+    /// Return key-revocation signatures attached directly to the secret certificate.
+    ///
+    /// These signatures are separate from direct-key signatures and from user or subkey bindings.
+    fn revocation_signature_infos(&self) -> Vec<SignatureInfo> {
+        revocation_signature_infos_from_details(&self.inner.details)
     }
 
     /// Return user IDs together with their certification self-signatures.

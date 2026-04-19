@@ -7,19 +7,27 @@ import pytest
 from openpgp import (
     CleartextSignedMessage,
     DetachedSignature,
+    EncryptionCaps,
+    KeyType,
     Message,
     PublicKey,
     SecretKey,
+    SecretKeyParamsBuilder,
     SignatureInfo,
+    SubkeyParamsBuilder,
     encrypt_message_to_recipient_bytes,
     encrypt_message_to_recipient,
+    encrypt_message_to_recipients_bytes,
+    encrypt_message_to_recipients,
     encrypt_message_with_password_bytes,
     encrypt_message_with_password,
     encrypt_session_key_to_recipient,
     encrypt_session_key_with_password,
     inspect_message,
     sign_cleartext_message,
+    sign_cleartext_message_many,
     sign_message,
+    sign_message_many,
 )
 
 
@@ -54,9 +62,43 @@ def load_public_key_fixture(name: str) -> PublicKey:
         return public_key
 
 
+def generate_signing_and_encryption_key(user_id: str) -> SecretKey:
+    return (
+        SecretKeyParamsBuilder()
+        .version(6)
+        .key_type(KeyType.ed25519())
+        .can_certify(True)
+        .can_sign(True)
+        .feature_seipd_v2(True)
+        .primary_user_id(user_id)
+        .preferred_symmetric_algorithms(["aes256", "aes192", "aes128"])
+        .preferred_hash_algorithms(["sha256", "sha384", "sha512", "sha224"])
+        .preferred_compression_algorithms(["zlib", "zip"])
+        .subkey(
+            SubkeyParamsBuilder()
+            .version(6)
+            .key_type(KeyType.x25519())
+            .can_encrypt(EncryptionCaps.all())
+            .build()
+        )
+        .build()
+        .generate()
+    )
+
+
 def signature_index_for_key_id(infos: list[SignatureInfo], key_id: str) -> int:
     return next(
         index for index, info in enumerate(infos) if key_id in info.issuer_key_ids
+    )
+
+
+def signature_index_for_fingerprint(
+    infos: list[SignatureInfo], fingerprint: str
+) -> int:
+    return next(
+        index
+        for index, info in enumerate(infos)
+        if fingerprint in info.issuer_fingerprints
     )
 
 
@@ -97,6 +139,7 @@ def test_parse_public_key_from_armor() -> None:
     assert key.key_id
     assert key.public_subkey_count == 1
     assert key.user_ids == []
+    assert key.revocation_signature_infos() == []
     assert PublicKey.from_bytes(key.to_bytes()).fingerprint == key.fingerprint
     key.verify_bindings()
 
@@ -110,6 +153,8 @@ def test_parse_secret_key_and_convert_to_public() -> None:
     assert public_key.public_subkey_count == 1
     assert public_key.fingerprint == secret_key.fingerprint
     assert secret_key.user_ids == public_key.user_ids
+    assert secret_key.revocation_signature_infos() == []
+    assert public_key.revocation_signature_infos() == []
     secret_key.verify_bindings()
 
 
@@ -136,7 +181,56 @@ def test_sign_and_verify_message() -> None:
     assert message.literal_filename() == b""
     assert message.payload_bytes() == b"Hello world"
     assert message.payload_text() == "Hello world"
+    assert message.signature_infos()[0].notations == []
+    assert message.signature_infos()[0].revocation_key is None
     message.verify(public_key)
+
+
+def test_sign_message_supports_custom_hash_algorithm() -> None:
+    secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    public_key = secret_key.to_public_key()
+
+    armored = sign_message(b"Hello world", secret_key, hash_algorithm="sha512")
+    message, _ = Message.from_armor(armored)
+    info = message.signature_infos()[0]
+
+    assert info.signature_type == "binary"
+    assert info.hash_algorithm == "SHA512"
+    assert info.notations == []
+    assert info.revocation_key is None
+    message.verify(public_key)
+
+
+def test_sign_message_many_supports_multiple_signers() -> None:
+    first_secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    second_secret_key = generate_signing_and_encryption_key(
+        "Second <second@example.com>"
+    )
+    first_public_key = first_secret_key.to_public_key()
+    second_public_key = second_secret_key.to_public_key()
+
+    armored = sign_message_many(
+        b"multi-signed payload",
+        [first_secret_key, second_secret_key],
+        hash_algorithm="sha384",
+    )
+    message, _ = Message.from_armor(armored)
+    infos = message.signature_infos()
+
+    assert message.signature_count() == 2
+    assert len(infos) == 2
+    assert {info.signature_type for info in infos} == {"binary"}
+    assert {info.hash_algorithm for info in infos} == {"SHA384"}
+
+    first_index = signature_index_for_fingerprint(infos, first_public_key.fingerprint)
+    second_index = signature_index_for_fingerprint(infos, second_public_key.fingerprint)
+
+    assert message.verify_signature(
+        first_public_key, first_index
+    ).issuer_fingerprints == [first_public_key.fingerprint]
+    assert message.verify_signature(
+        second_public_key, second_index
+    ).issuer_fingerprints == [second_public_key.fingerprint]
 
 
 def test_sign_and_verify_detached_signature() -> None:
@@ -150,6 +244,8 @@ def test_sign_and_verify_detached_signature() -> None:
     assert info.signature_type == "binary"
     assert info.hash_algorithm == "SHA256"
     assert info.is_one_pass is False
+    assert info.notations == []
+    assert info.revocation_key is None
     signature.verify(public_key, payload)
     assert (
         signature.verify_signature(public_key, payload).signed_hash_value
@@ -162,6 +258,36 @@ def test_sign_and_verify_detached_signature() -> None:
     armored_signature, headers = DetachedSignature.from_armor(signature.to_armored())
     assert headers == {}
     armored_signature.verify(public_key, payload)
+
+
+def test_detached_signature_supports_custom_hash_algorithm_for_binary_signatures() -> (
+    None
+):
+    secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    public_key = secret_key.to_public_key()
+
+    signature = DetachedSignature.sign_binary(
+        b"detached payload",
+        secret_key,
+        hash_algorithm="sha512",
+    )
+
+    assert signature.signature_info().hash_algorithm == "SHA512"
+    signature.verify(public_key, b"detached payload")
+
+
+def test_detached_text_signature_uses_text_verification_helpers() -> None:
+    secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    public_key = secret_key.to_public_key()
+    text = "hello\nworld\n"
+
+    signature = DetachedSignature.sign_text(text, secret_key, hash_algorithm="sha384")
+    info = signature.signature_info()
+
+    assert info.signature_type == "text"
+    assert info.hash_algorithm == "SHA384"
+    signature.verify_text(public_key, "hello\r\nworld\r\n")
+    assert signature.verify_text_signature(public_key, text).signature_type == "text"
 
 
 def test_encrypt_and_decrypt_message_with_password_seipdv1() -> None:
@@ -448,6 +574,169 @@ def test_cleartext_sign_and_verify_round_trip() -> None:
     )
     assert round_trip_headers == {}
     assert reparsed.signed_text() == message.signed_text()
+
+
+def test_sign_cleartext_message_supports_custom_hash_algorithm() -> None:
+    secret_key, _ = SecretKey.from_armor(read_fixture_text("cleartext-key-01.asc"))
+    public_key = secret_key.to_public_key()
+
+    armored = sign_cleartext_message("hello\n", secret_key, hash_algorithm="sha512")
+    message, _ = CleartextSignedMessage.from_armor(armored)
+
+    assert message.signature_infos()[0].hash_algorithm == "SHA512"
+    message.verify(public_key)
+
+
+def test_cleartext_signed_message_classmethod_supports_custom_hash_algorithm() -> None:
+    secret_key, _ = SecretKey.from_armor(read_fixture_text("cleartext-key-01.asc"))
+    public_key = secret_key.to_public_key()
+
+    message = CleartextSignedMessage.sign(
+        "hello\n", secret_key, hash_algorithm="sha512"
+    )
+    info = message.signature_infos()[0]
+
+    assert info.signature_type == "text"
+    assert info.hash_algorithm == "SHA512"
+    reparsed, _ = CleartextSignedMessage.from_armor(message.to_armored())
+    reparsed.verify(public_key)
+
+
+def test_sign_cleartext_message_many_supports_multiple_signers() -> None:
+    first_secret_key, _ = SecretKey.from_armor(
+        read_fixture_text("cleartext-key-01.asc")
+    )
+    second_secret_key = generate_signing_and_encryption_key(
+        "Second <second@example.com>"
+    )
+    first_public_key = first_secret_key.to_public_key()
+    second_public_key = second_secret_key.to_public_key()
+
+    armored = sign_cleartext_message_many(
+        "multi\ncleartext\npayload\n",
+        [first_secret_key, second_secret_key],
+        hash_algorithm="sha384",
+    )
+    message, _ = CleartextSignedMessage.from_armor(armored)
+    infos = message.signature_infos()
+
+    assert message.signature_count() == 2
+    assert {info.signature_type for info in infos} == {"text"}
+    assert {info.hash_algorithm for info in infos} == {"SHA384"}
+
+    first_index = signature_index_for_fingerprint(infos, first_public_key.fingerprint)
+    second_index = signature_index_for_fingerprint(infos, second_public_key.fingerprint)
+
+    assert message.verify_signature(
+        first_public_key, first_index
+    ).issuer_fingerprints == [first_public_key.fingerprint]
+    assert message.verify_signature(
+        second_public_key, second_index
+    ).issuer_fingerprints == [second_public_key.fingerprint]
+
+
+def test_encrypt_session_key_to_recipient_supports_anonymous_recipient() -> None:
+    secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    public_key = secret_key.to_public_key()
+
+    packet = encrypt_session_key_to_recipient(
+        bytes(range(16)),
+        public_key,
+        version="seipd-v2",
+        symmetric_algorithm="aes128",
+        anonymous_recipient=True,
+    )
+
+    assert packet.version == 6
+    assert packet.recipient_is_anonymous is True
+    assert packet.recipient_fingerprint is None
+    assert packet.recipient_key_id is None
+
+
+def test_encrypt_message_to_recipient_supports_anonymous_recipient() -> None:
+    secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    public_key = secret_key.to_public_key()
+
+    armored = encrypt_message_to_recipient(
+        b"anonymous payload",
+        public_key,
+        anonymous_recipient=True,
+    )
+    message, _ = Message.from_armor(armored)
+    pkesk = message.public_key_encrypted_session_key_packets()[0]
+
+    assert pkesk.recipient_is_anonymous is True
+    assert pkesk.recipient_fingerprint is None
+    assert pkesk.recipient_key_id is None
+    assert message.decrypt(secret_key).payload_bytes() == b"anonymous payload"
+
+
+def test_encrypt_message_to_recipient_bytes_supports_anonymous_recipient() -> None:
+    secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    public_key = secret_key.to_public_key()
+
+    message = Message.from_bytes(
+        encrypt_message_to_recipient_bytes(
+            b"anonymous payload",
+            public_key,
+            anonymous_recipient=True,
+        )
+    )
+    pkesk = message.public_key_encrypted_session_key_packets()[0]
+
+    assert pkesk.recipient_is_anonymous is True
+    assert pkesk.recipient_fingerprint is None
+    assert pkesk.recipient_key_id is None
+    assert message.decrypt(secret_key).payload_bytes() == b"anonymous payload"
+
+
+def test_encrypt_message_to_recipients_encrypts_for_multiple_recipients() -> None:
+    first_secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    second_secret_key = generate_signing_and_encryption_key(
+        "Second <second@example.com>"
+    )
+    first_public_key = first_secret_key.to_public_key()
+    second_public_key = second_secret_key.to_public_key()
+
+    armored = encrypt_message_to_recipients(
+        b"shared payload",
+        [first_public_key, second_public_key],
+    )
+    message, _ = Message.from_armor(armored)
+
+    assert len(message.public_key_encrypted_session_key_packets()) == 2
+    assert message.decrypt(first_secret_key).payload_bytes() == b"shared payload"
+    assert message.decrypt(second_secret_key).payload_bytes() == b"shared payload"
+
+
+def test_encrypt_message_to_recipients_bytes_supports_anonymous_recipients() -> None:
+    first_secret_key, _ = SecretKey.from_armor(SECRET_KEY)
+    second_secret_key = generate_signing_and_encryption_key(
+        "Second <second@example.com>"
+    )
+    first_public_key = first_secret_key.to_public_key()
+    second_public_key = second_secret_key.to_public_key()
+
+    message = Message.from_bytes(
+        encrypt_message_to_recipients_bytes(
+            b"anonymous shared payload",
+            [first_public_key, second_public_key],
+            anonymous_recipient=True,
+        )
+    )
+    pkesks = message.public_key_encrypted_session_key_packets()
+
+    assert len(pkesks) == 2
+    assert all(packet.recipient_is_anonymous for packet in pkesks)
+    assert all(packet.recipient_fingerprint is None for packet in pkesks)
+    assert all(packet.recipient_key_id is None for packet in pkesks)
+    assert (
+        message.decrypt(first_secret_key).payload_bytes() == b"anonymous shared payload"
+    )
+    assert (
+        message.decrypt(second_secret_key).payload_bytes()
+        == b"anonymous shared payload"
+    )
 
 
 def test_signed_message_signature_infos_and_indexed_verification() -> None:
