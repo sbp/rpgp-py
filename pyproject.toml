@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rpgp-py"
-description = "Python binding for rpgp, a Rust implementation of OpenPGP according to RFC 9580"
+description = "Python binding for rPGP, a Rust implementation of OpenPGP according to RFC 9580"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
