@@ -53,8 +53,6 @@ assert public_key.public_subkey_count >= 0
 assert secret_key.secret_subkey_count >= 0
 ```
 
-This is the core entry point when you want to inspect fingerprints, key IDs, OpenPGP key versions, user IDs, subkeys, self-signatures, revocation signatures, or packet-level metadata.
-
 ### 2. Sign and verify messages and detached signatures
 
 ```python
@@ -87,8 +85,6 @@ multi_signed = sign_message_many(
 multi_message, _ = Message.from_armor(multi_signed)
 assert multi_message.signature_count() == 2
 ```
-
-For inline or detached signatures, `SignatureInfo` exposes the signature packet metadata that is often needed for debugging or auditing, including issuer data, notations, and revocation-key metadata when those subpackets are present.
 
 ### 3. Work with cleartext signatures
 
