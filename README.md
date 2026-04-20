@@ -182,8 +182,6 @@ raw_pkesk = encrypt_session_key_to_recipient(
 assert raw_pkesk
 ```
 
-`encrypt_session_key_to_recipient`, `encrypt_message_to_recipient`, and the multi-recipient helpers all accept `anonymous_recipient=True` when you want PKESK packets without recipient identifiers.
-
 ### 5. Generate modern RFC 9580-compatible key material
 
 ```python
