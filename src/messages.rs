@@ -955,7 +955,10 @@ mod tests {
         let verifier = select_verifier_for_signature(&public_key, &signature.signature).unwrap();
         match verifier {
             SelectedVerifier::Subkey(subkey) => {
-                assert_eq!(subkey.fingerprint(), public_key.public_subkeys[0].fingerprint());
+                assert_eq!(
+                    subkey.fingerprint(),
+                    public_key.public_subkeys[0].fingerprint()
+                );
             }
             SelectedVerifier::Primary(_) => panic!("expected signing subkey verifier"),
         }
@@ -972,10 +975,10 @@ mod tests {
             HashAlgorithm::Sha256,
             Cursor::new(b"payload"),
             SubpacketConfig::UserDefined {
-                hashed: vec![Subpacket::regular(SubpacketData::SignatureCreationTime(
-                    Timestamp::now(),
-                ))
-                .unwrap()],
+                hashed: vec![
+                    Subpacket::regular(SubpacketData::SignatureCreationTime(Timestamp::now()))
+                        .unwrap(),
+                ],
                 unhashed: vec![],
             },
         )
