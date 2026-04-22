@@ -31,13 +31,21 @@ hooks = [
 repo = "local"
 hooks = [
   {
-    id = "tests",
-    name = "tests",
+    id = "python-tests",
+    name = "python tests",
     entry = "uv run pytest tests",
     language = "system",
     types = ["python"],
     pass_filenames = false
   },
+  {
+  id = "rust-tests",
+  name = "rust tests",
+  entry = "cargo test",
+  language = "system",
+  pass_filenames = false
+  },
+
     {
     id = "just-format",
     name = "just format",

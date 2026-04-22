@@ -11,6 +11,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+
+  test-rust:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        BUILD_TARGET: ["release"]
+    steps:
+      - uses: actions/checkout@v5
+      - name: "Build"
+        run: cargo build --profile ${{ matrix.BUILD_TARGET }}
+      - name: "Test"
+        run: cargo test --profile ${{ matrix.BUILD_TARGET }}
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -22,7 +35,7 @@ jobs:
       - run: uv python install 3.10
       - run: just install lint
 
-  test:
+  test-python:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
