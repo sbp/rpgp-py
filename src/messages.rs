@@ -107,6 +107,23 @@ fn verifier_for_issuer_key_id<'a>(
     Ok(SelectedVerifier::Subkey(subkey))
 }
 
+/// Resolve which certificate key should be used to verify a signature.
+///
+/// Selection is based on the signature's own issuer metadata, using **hashed**
+/// subpackets only. Unhashed subpackets are advisory per RFC 9580 §5.2.3 and
+/// are deliberately ignored for selection.
+///
+/// Precedence:
+///   1. Use the Hashed Issuer Fingerprint subpacket, if present. This must match
+///      the primary key or a bound public subkey. If a hashed Issuer Key ID is
+///      also present, it must resolve to the same component key.
+///   2. Use the Hashed Issuer Key ID (or the fixed field on v3 signatures). This
+///      must match the primary key or a bound public subkey.
+///   3. Fall back to the primary key, if neither of the above are found.
+///
+/// Returns an error if a stated issuer cannot be matched to the certificate,
+/// if the two hashed identifiers disagree, or if a matched subkey's binding
+/// signature does not verify against the primary key.
 fn select_verifier_for_signature<'a>(
     certificate: &'a SignedPublicKey,
     signature: &Signature,
@@ -140,12 +157,6 @@ fn select_verifier_for_signature<'a>(
             })
             .last(),
     };
-
-    if issuer_key_id.is_some() && config.version() == SignatureVersion::V6 {
-        return Err(to_py_err(
-            "version 6 signatures must not include a hashed issuer key id",
-        ));
-    }
 
     if let Some(issuer_fingerprint) = issuer_fingerprint {
         let verifier = verifier_for_issuer_fingerprint(certificate, issuer_fingerprint)?;
@@ -868,9 +879,14 @@ impl CleartextSignedMessage {
             return Ok(signature_info_from_signature(signature, false));
         }
 
+        let mut last_selector_error: Option<PyErr> = None;
         for signature in signatures {
-            let Ok(verifier) = select_verifier_for_signature(&key.inner, signature) else {
-                continue;
+            let verifier = match select_verifier_for_signature(&key.inner, signature) {
+                Ok(verifier) => verifier,
+                Err(err) => {
+                    last_selector_error = Some(err);
+                    continue;
+                }
             };
             if verifier
                 .verify_signature(signature, signed_text.as_bytes())
@@ -880,7 +896,7 @@ impl CleartextSignedMessage {
             }
         }
 
-        Err(to_py_err("no matching signature found"))
+        Err(last_selector_error.unwrap_or_else(|| to_py_err("no matching signature found")))
     }
 
     /// Verify at least one cleartext signature against the given public key.
