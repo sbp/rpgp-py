@@ -290,6 +290,35 @@ def test_detached_text_signature_uses_text_verification_helpers() -> None:
     assert signature.verify_text_signature(public_key, text).signature_type == "text"
 
 
+def test_detached_signature_verifies_when_made_by_signing_subkey() -> None:
+    public_key = load_public_key_fixture("subkey-signed-1/cert.asc")
+    payload = (FIXTURES / "subkey-signed-1/payload.bin").read_bytes()
+    signature, _ = DetachedSignature.from_armor(
+        read_fixture_text("subkey-signed-1/sig.asc")
+    )
+
+    signature.verify(public_key, payload)
+    info = signature.verify_signature(public_key, payload)
+
+    assert info.signature_type == "binary"
+    assert info.issuer_fingerprints
+    assert public_key.fingerprint not in info.issuer_fingerprints
+
+
+def test_detached_signature_fails_against_unrelated_certificate() -> None:
+    wrong_public_key = load_public_key_fixture("ed25519-cv25519-sample-1.asc")
+    payload = (FIXTURES / "subkey-signed-1/payload.bin").read_bytes()
+    signature, _ = DetachedSignature.from_armor(
+        read_fixture_text("subkey-signed-1/sig.asc")
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="does not match the certificate primary key or any bound public subkey",
+    ):
+        signature.verify(wrong_public_key, payload)
+
+
 def test_encrypt_and_decrypt_message_with_password_seipdv1() -> None:
     armored = encrypt_message_with_password(
         b"secret payload",
