@@ -19,6 +19,9 @@ jobs:
         BUILD_TARGET: ["release"]
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
       - name: "Build"
         run: cargo build --profile ${{ matrix.BUILD_TARGET }}
       - name: "Test"
