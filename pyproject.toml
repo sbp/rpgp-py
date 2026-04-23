@@ -27,6 +27,7 @@ dev = [
 [tool.maturin]
 python-source = "src"
 module-name = "openpgp._openpgp"
+features = ["extension-module"]
 
 
 [tool.pytest.ini_options]
