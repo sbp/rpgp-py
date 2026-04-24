@@ -4,6 +4,10 @@ use crate::keys::*;
 use crate::packets::*;
 use crate::serialization::*;
 use crate::*;
+use pgp::{
+    packet::SubpacketData,
+    types::{Fingerprint, VerifyingKey},
+};
 
 /// A parsed OpenPGP message.
 ///
@@ -18,6 +22,159 @@ pub(crate) struct Message {
 pub(crate) fn owned_message_from_source(source: Vec<u8>) -> PyResult<Message> {
     let info = inspect_message_from_source(&source).map_err(to_py_err)?;
     Ok(Message { source, info })
+}
+
+enum SelectedVerifier<'a> {
+    Primary(&'a SignedPublicKey),
+    Subkey(&'a SignedPublicSubKey),
+}
+
+impl SelectedVerifier<'_> {
+    fn as_dyn(&self) -> &dyn VerifyingKey {
+        match self {
+            Self::Primary(key) => *key,
+            Self::Subkey(subkey) => *subkey,
+        }
+    }
+
+    fn legacy_key_id(&self) -> KeyId {
+        match self {
+            Self::Primary(key) => key.legacy_key_id(),
+            Self::Subkey(subkey) => subkey.legacy_key_id(),
+        }
+    }
+
+    fn verify_detached(&self, signature: &PgpDetachedSignature, data: &[u8]) -> PyResult<()> {
+        match self {
+            Self::Primary(key) => signature.verify(key, data).map_err(to_py_err),
+            Self::Subkey(subkey) => signature.verify(subkey, data).map_err(to_py_err),
+        }
+    }
+
+    fn verify_signature(&self, signature: &Signature, data: &[u8]) -> PyResult<()> {
+        match self {
+            Self::Primary(key) => signature.verify(key, Cursor::new(data)).map_err(to_py_err),
+            Self::Subkey(subkey) => signature
+                .verify(subkey, Cursor::new(data))
+                .map_err(to_py_err),
+        }
+    }
+}
+
+fn verifier_for_issuer_fingerprint<'a>(
+    certificate: &'a SignedPublicKey,
+    issuer_fingerprint: &Fingerprint,
+) -> PyResult<SelectedVerifier<'a>> {
+    if certificate.fingerprint() == *issuer_fingerprint {
+        return Ok(SelectedVerifier::Primary(certificate));
+    }
+
+    let subkey = certificate
+        .public_subkeys
+        .iter()
+        .find(|subkey| subkey.fingerprint() == *issuer_fingerprint)
+        .ok_or_else(|| {
+            to_py_err(
+                "signature issuer fingerprint does not match the certificate primary key or any bound public subkey",
+            )
+        })?;
+    subkey
+        .verify_bindings(&certificate.primary_key)
+        .map_err(to_py_err)?;
+    Ok(SelectedVerifier::Subkey(subkey))
+}
+
+fn verifier_for_issuer_key_id<'a>(
+    certificate: &'a SignedPublicKey,
+    issuer_key_id: &KeyId,
+) -> PyResult<SelectedVerifier<'a>> {
+    if certificate.legacy_key_id() == *issuer_key_id {
+        return Ok(SelectedVerifier::Primary(certificate));
+    }
+
+    let subkey = certificate
+        .public_subkeys
+        .iter()
+        .find(|subkey| subkey.legacy_key_id() == *issuer_key_id)
+        .ok_or_else(|| {
+            to_py_err(
+                "signature issuer key id does not match the certificate primary key or any bound public subkey",
+            )
+        })?;
+    subkey
+        .verify_bindings(&certificate.primary_key)
+        .map_err(to_py_err)?;
+    Ok(SelectedVerifier::Subkey(subkey))
+}
+
+/// Resolve which certificate key should be used to verify a signature.
+///
+/// Selection is based on the signature's own issuer metadata, using **hashed**
+/// subpackets only. Unhashed subpackets are advisory per RFC 9580 §5.2.3 and
+/// are deliberately ignored for selection.
+///
+/// Precedence:
+///   1. Use the Hashed Issuer Fingerprint subpacket, if present. This must match
+///      the primary key or a bound public subkey. If a hashed Issuer Key ID is
+///      also present, it must resolve to the same component key.
+///   2. Use the Hashed Issuer Key ID (or the fixed field on v3 signatures). This
+///      must match the primary key or a bound public subkey.
+///   3. Fall back to the primary key, if neither of the above are found.
+///
+/// Returns an error if a stated issuer cannot be matched to the certificate,
+/// if the two hashed identifiers disagree, or if a matched subkey's binding
+/// signature does not verify against the primary key.
+fn select_verifier_for_signature<'a>(
+    certificate: &'a SignedPublicKey,
+    signature: &Signature,
+) -> PyResult<SelectedVerifier<'a>> {
+    let Some(config) = signature.config() else {
+        return Ok(SelectedVerifier::Primary(certificate));
+    };
+
+    let issuer_fingerprint = config
+        .hashed_subpackets()
+        .filter_map(|subpacket| {
+            if let SubpacketData::IssuerFingerprint(fingerprint) = &subpacket.data {
+                Some(fingerprint)
+            } else {
+                None
+            }
+        })
+        .last();
+
+    let issuer_key_id = match &config.version_specific {
+        SignatureVersionSpecific::V2 { issuer_key_id, .. }
+        | SignatureVersionSpecific::V3 { issuer_key_id, .. } => Some(issuer_key_id),
+        _ => config
+            .hashed_subpackets()
+            .filter_map(|subpacket| {
+                if let SubpacketData::IssuerKeyId(key_id) = &subpacket.data {
+                    Some(key_id)
+                } else {
+                    None
+                }
+            })
+            .last(),
+    };
+
+    if let Some(issuer_fingerprint) = issuer_fingerprint {
+        let verifier = verifier_for_issuer_fingerprint(certificate, issuer_fingerprint)?;
+        if let Some(issuer_key_id) = issuer_key_id {
+            if verifier.legacy_key_id() != *issuer_key_id {
+                return Err(to_py_err(
+                    "hashed issuer fingerprint and issuer key id refer to different certificate keys",
+                ));
+            }
+        }
+        return Ok(verifier);
+    }
+
+    if let Some(issuer_key_id) = issuer_key_id {
+        return verifier_for_issuer_key_id(certificate, issuer_key_id);
+    }
+
+    Ok(SelectedVerifier::Primary(certificate))
 }
 
 pub(crate) fn decrypted_message_from_parsed(
@@ -92,7 +249,7 @@ pub(crate) fn verify_message_signature_info(
 ) -> PyResult<SignatureInfo> {
     message.as_data_vec().map_err(to_py_err)?;
 
-    let info = match &message {
+    let (info, verifier) = match &message {
         PgpMessage::Signed { reader, .. } => {
             let signatures = reader
                 .signatures()
@@ -100,7 +257,8 @@ pub(crate) fn verify_message_signature_info(
             let signature = signatures
                 .get(index)
                 .ok_or_else(|| to_py_err("signature index out of range"))?;
-            signature_info_from_full_signature(signature)
+            let verifier = select_verifier_for_signature(key, signature.signature())?;
+            (signature_info_from_full_signature(signature), verifier)
         }
         PgpMessage::Encrypted { .. } => {
             return Err(to_py_err(
@@ -118,7 +276,7 @@ pub(crate) fn verify_message_signature_info(
     };
 
     message
-        .verify_nested_explicit(index, key)
+        .verify_nested_explicit(index, verifier.as_dyn())
         .map_err(to_py_err)?;
     Ok(info)
 }
@@ -510,10 +668,8 @@ impl DecryptedMessage {
             .signatures
             .get(index)
             .ok_or_else(|| to_py_err("signature index out of range"))?;
-        signature
-            .signature
-            .verify(&key.inner, Cursor::new(self.payload.as_slice()))
-            .map_err(to_py_err)?;
+        let verifier = select_verifier_for_signature(&key.inner, &signature.signature)?;
+        verifier.verify_signature(&signature.signature, self.payload.as_slice())?;
         Ok(signature_info_from_decrypted_signature(signature))
     }
 
@@ -599,12 +755,13 @@ impl DetachedSignature {
 
     /// Verify a detached signature against a public key and payload.
     fn verify(&self, key: PyRef<'_, PublicKey>, data: &[u8]) -> PyResult<()> {
-        self.inner.verify(&key.inner, data).map_err(to_py_err)
+        let verifier = select_verifier_for_signature(&key.inner, &self.inner.signature)?;
+        verifier.verify_detached(&self.inner, data)
     }
 
     /// Verify a detached signature and return its metadata.
     fn verify_signature(&self, key: PyRef<'_, PublicKey>, data: &[u8]) -> PyResult<SignatureInfo> {
-        self.inner.verify(&key.inner, data).map_err(to_py_err)?;
+        self.verify(key, data)?;
         Ok(self.signature_info())
     }
 
@@ -612,9 +769,7 @@ impl DetachedSignature {
     ///
     /// Text verification normalizes line endings, matching the semantics of text signatures.
     fn verify_text(&self, key: PyRef<'_, PublicKey>, text: &str) -> PyResult<()> {
-        self.inner
-            .verify(&key.inner, text.as_bytes())
-            .map_err(to_py_err)
+        self.verify(key, text.as_bytes())
     }
 
     /// Verify a detached text signature and return its metadata.
@@ -719,19 +874,29 @@ impl CleartextSignedMessage {
             let signature = signatures
                 .get(index)
                 .ok_or_else(|| to_py_err("signature index out of range"))?;
-            signature
-                .verify(&key.inner, signed_text.as_bytes())
-                .map_err(to_py_err)?;
+            let verifier = select_verifier_for_signature(&key.inner, signature)?;
+            verifier.verify_signature(signature, signed_text.as_bytes())?;
             return Ok(signature_info_from_signature(signature, false));
         }
 
+        let mut last_selector_error: Option<PyErr> = None;
         for signature in signatures {
-            if signature.verify(&key.inner, signed_text.as_bytes()).is_ok() {
+            let verifier = match select_verifier_for_signature(&key.inner, signature) {
+                Ok(verifier) => verifier,
+                Err(err) => {
+                    last_selector_error = Some(err);
+                    continue;
+                }
+            };
+            if verifier
+                .verify_signature(signature, signed_text.as_bytes())
+                .is_ok()
+            {
                 return Ok(signature_info_from_signature(signature, false));
             }
         }
 
-        Err(to_py_err("no matching signature found"))
+        Err(last_selector_error.unwrap_or_else(|| to_py_err("no matching signature found")))
     }
 
     /// Verify at least one cleartext signature against the given public key.
@@ -755,5 +920,106 @@ impl CleartextSignedMessage {
             "CleartextSignedMessage(signature_count={})",
             self.inner.signatures().len()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use pgp::{
+        composed::{MessageBuilder, SubpacketConfig},
+        packet::Subpacket,
+    };
+    use rand::thread_rng;
+
+    fn generate_signing_subkey_certificate() -> (SignedSecretKey, SignedPublicKey) {
+        let params = PgpSecretKeyParamsBuilder::default()
+            .version(KeyVersion::V6)
+            .key_type(PgpKeyType::Ed25519)
+            .can_certify(true)
+            .primary_user_id("alice".into())
+            .subkey(
+                PgpSubkeyParamsBuilder::default()
+                    .version(KeyVersion::V6)
+                    .key_type(PgpKeyType::Ed25519)
+                    .can_sign(true)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        let secret_key = params.generate(thread_rng()).unwrap();
+        let public_key = SignedPublicKey::from(secret_key.clone());
+        (secret_key, public_key)
+    }
+
+    #[test]
+    fn select_verifier_for_signature_uses_signing_subkey_when_hashed_issuer_fingerprint_matches() {
+        let (secret_key, public_key) = generate_signing_subkey_certificate();
+        let signing_subkey = &secret_key.secret_subkeys[0].key;
+        let signature = PgpDetachedSignature::sign_binary_data(
+            thread_rng(),
+            signing_subkey,
+            &Password::empty(),
+            HashAlgorithm::Sha256,
+            Cursor::new(b"payload"),
+        )
+        .unwrap();
+
+        let verifier = select_verifier_for_signature(&public_key, &signature.signature).unwrap();
+        match verifier {
+            SelectedVerifier::Subkey(subkey) => {
+                assert_eq!(
+                    subkey.fingerprint(),
+                    public_key.public_subkeys[0].fingerprint()
+                );
+            }
+            SelectedVerifier::Primary(_) => panic!("expected signing subkey verifier"),
+        }
+    }
+
+    #[test]
+    fn select_verifier_for_signature_falls_back_to_primary_without_hashed_issuer_metadata() {
+        let (secret_key, public_key) = generate_signing_subkey_certificate();
+        let signing_subkey = &secret_key.secret_subkeys[0].key;
+        let signature = PgpDetachedSignature::sign_binary_data_with_subpackets(
+            thread_rng(),
+            signing_subkey,
+            &Password::empty(),
+            HashAlgorithm::Sha256,
+            Cursor::new(b"payload"),
+            SubpacketConfig::UserDefined {
+                hashed: vec![
+                    Subpacket::regular(SubpacketData::SignatureCreationTime(Timestamp::now()))
+                        .unwrap(),
+                ],
+                unhashed: vec![],
+            },
+        )
+        .unwrap();
+
+        let verifier = select_verifier_for_signature(&public_key, &signature.signature).unwrap();
+        match verifier {
+            SelectedVerifier::Primary(_) => {}
+            SelectedVerifier::Subkey(_) => panic!("expected primary-key fallback"),
+        }
+    }
+
+    #[test]
+    fn verify_message_signature_info_accepts_bound_signing_subkey_signatures() {
+        let (secret_key, public_key) = generate_signing_subkey_certificate();
+        let signing_subkey = &secret_key.secret_subkeys[0].key;
+        let mut builder = MessageBuilder::from_bytes("", b"payload".as_slice());
+        builder.sign(signing_subkey, Password::empty(), HashAlgorithm::Sha256);
+        let signed_message = builder.to_vec(&mut thread_rng()).unwrap();
+        let (message, _) = parse_message(&signed_message).unwrap();
+
+        let info = verify_message_signature_info(message, &public_key, 0).unwrap();
+        assert_eq!(
+            info.issuer_fingerprints,
+            vec![public_key.public_subkeys[0].fingerprint().to_string()]
+        );
     }
 }
