@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "rpgp-py"
-version = "0.19.5"
+version = "0.19.6"
 dependencies = [
  "pgp",
  "pyo3",
