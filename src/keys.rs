@@ -5,7 +5,7 @@ use crate::serialization::*;
 use crate::*;
 
 /// A transferable OpenPGP public key (certificate) as defined by RFC 9580.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PublicKey {
     pub(crate) inner: SignedPublicKey,
@@ -147,7 +147,7 @@ impl PublicKey {
 }
 
 /// A transferable OpenPGP secret key, including any secret subkeys.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct SecretKey {
     pub(crate) inner: SignedSecretKey,

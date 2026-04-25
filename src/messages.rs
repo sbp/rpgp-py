@@ -12,7 +12,7 @@ use pgp::{
 /// A parsed OpenPGP message.
 ///
 /// The message may be literal, compressed, signed, or encrypted.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct Message {
     pub(crate) source: Vec<u8>,
@@ -559,7 +559,7 @@ impl Message {
 ///
 /// The decrypted payload is materialized once so Python code can continue inspecting or verifying
 /// signed content that was revealed by decryption.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct DecryptedMessage {
     pub(crate) kind: String,
@@ -692,7 +692,7 @@ impl DecryptedMessage {
 }
 
 /// A detached OpenPGP signature packet sequence.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct DetachedSignature {
     pub(crate) inner: PgpDetachedSignature,
@@ -802,7 +802,7 @@ impl DetachedSignature {
 }
 
 /// A cleartext signed message, following RFC 9580 section 7.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct CleartextSignedMessage {
     pub(crate) inner: PgpCleartextSignedMessage,

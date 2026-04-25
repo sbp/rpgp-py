@@ -188,6 +188,6 @@ jobs:
           fi
           export TWINE_USERNAME=__token__
           export TWINE_PASSWORD="$token"
-          python -m twine upload --skip-existing dist/*
+          python -m twine upload dist/*
         env:
           PYPI_TOKEN_FROM_SECRET: ${{ secrets.PYPI_TOKEN }}

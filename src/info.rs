@@ -720,7 +720,7 @@ pub(crate) fn signature_info_from_decrypted_signature(
 }
 
 /// Decoded RFC 9580 key-flags subpacket metadata.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone, Copy)]
 pub(crate) struct KeyFlagsInfo {
     pub(crate) certify: bool,
@@ -809,7 +809,7 @@ impl KeyFlagsInfo {
     }
 }
 
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct UserAttribute {
     pub(crate) inner: PgpUserAttribute,
@@ -858,7 +858,7 @@ impl UserAttribute {
 }
 
 /// A signed user attribute and its attached certification self-signatures.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct UserAttributeBindingInfo {
     pub(crate) user_attribute: UserAttribute,
@@ -889,7 +889,7 @@ impl UserAttributeBindingInfo {
 }
 
 /// Decoded RFC 9580 Features subpacket metadata.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone, Copy)]
 pub(crate) struct FeaturesInfo {
     pub(crate) seipd_v1: bool,
@@ -919,7 +919,7 @@ impl FeaturesInfo {
 }
 
 /// Structured `KeyDetails.public_params()` metadata for a key packet.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PublicParamsInfo {
     pub(crate) kind: String,
@@ -1012,7 +1012,7 @@ impl PublicParamsInfo {
 }
 
 /// A subkey and its attached binding or revocation signatures.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct SubkeyBindingInfo {
     pub(crate) fingerprint: String,
@@ -1089,7 +1089,7 @@ impl SubkeyBindingInfo {
 }
 
 /// A user ID and its attached certification self-signatures.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct UserBindingInfo {
     pub(crate) user_id: String,
@@ -1128,7 +1128,7 @@ impl UserBindingInfo {
 }
 
 /// Decoded RFC 9580 signature-notation metadata.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct SignatureNotationInfo {
     pub(crate) human_readable: bool,
@@ -1169,7 +1169,7 @@ impl SignatureNotationInfo {
 /// Decoded designated-revocation-key metadata from a signature.
 ///
 /// This reflects the deprecated RFC 9580 revocation-key subpacket, when present.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct RevocationKeyInfo {
     pub(crate) class_id: u8,
@@ -1220,7 +1220,7 @@ impl RevocationKeyInfo {
 /// the 16-bit signed hash prefix, version-6 salts, and certificate self-signature metadata such
 /// as key flags, features, preferred algorithm lists, notations, and revocation-key metadata when
 /// present.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct SignatureInfo {
     pub(crate) version: u8,
@@ -1435,7 +1435,7 @@ impl SignatureInfo {
 }
 
 /// Lightweight metadata about an OpenPGP message.
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct MessageInfo {
     pub(crate) kind: String,

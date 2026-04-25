@@ -21,7 +21,7 @@ pub(crate) fn skesk_version_number(version: pgp::types::SkeskVersion) -> u8 {
     }
 }
 
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PublicKeyEncryptedSessionKeyPacket {
     pub(crate) inner: PgpPublicKeyEncryptedSessionKey,
@@ -96,7 +96,7 @@ impl PublicKeyEncryptedSessionKeyPacket {
     }
 }
 
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct SymKeyEncryptedSessionKeyPacket {
     pub(crate) inner: PgpSymKeyEncryptedSessionKey,
@@ -180,7 +180,7 @@ impl SymKeyEncryptedSessionKeyPacket {
     }
 }
 
-#[pyclass(module = "openpgp")]
+#[pyclass(module = "openpgp", from_py_object)]
 #[derive(Clone)]
 pub(crate) struct EncryptedDataPacket {
     pub(crate) kind: String,

@@ -11,7 +11,7 @@ lint:
     uv run prek run --all-files
 
 test *args:
-    cargo test --profile release
+    uv run --no-sync cargo test --profile release
     uv run --no-sync pytest {{ args }}
 
 typecheck:
